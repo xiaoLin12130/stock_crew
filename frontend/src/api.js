@@ -22,6 +22,8 @@ export class ApiError extends Error {
 }
 
 const REQUEST_TIMEOUT_MS = 30000;
+// 聊天消息：多分析师交叉为串行 LLM 调用（每轮最长 120s），允许最长 4 分钟
+const CHAT_MESSAGE_TIMEOUT_MS = 240000;
 
 // 带超时的 fetch：杜绝无限卡死（AbortController 中止后抛中文超时错误）
 async function fetchWithTimeout(path, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
@@ -173,11 +175,15 @@ export async function sendChatMessage(sessionId, content) {
     return { session_id: sessionId, messages: newMessages, disclaimer: session.disclaimer, offline: true };
   }
   try {
-    const res = await fetchWithTimeout(`/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
-    });
+    const res = await fetchWithTimeout(
+      `/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      },
+      CHAT_MESSAGE_TIMEOUT_MS
+    );
     if (!res.ok) throw await errorFrom(res, "发送消息失败");
     return await res.json();
   } catch (err) {

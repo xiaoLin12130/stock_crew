@@ -185,7 +185,7 @@ export default function ChatView({
 
       {/* 消息流 */}
       <div className="chat-main">
-        {sessionLoading ? (
+        {sessionLoading || (!session && activeSessionId) ? (
           <div className="loading-card">
             <div className="spinner" />
             <div style={{ marginTop: 10 }}>正在加载会话消息…</div>
@@ -254,6 +254,11 @@ export default function ChatView({
             </div>
 
             {sendError ? <div className="upload-error">{sendError}</div> : null}
+            {sending ? (
+              <div className="chat-hint">
+                分析师正在思考…（多分析师交叉为串行推理，通常约 1-3 分钟，请勿重复发送）
+              </div>
+            ) : null}
             <div className="chat-input-row">
               <input
                 className="chat-input"
