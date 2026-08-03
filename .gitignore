@@ -1,0 +1,32 @@
+# ── Python ──
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache/
+
+# ── 虚拟环境 ──
+.venv
+venv/
+
+# ── 数据与隐私（绝不入库） ──
+data/
+data_cache/
+output/
+chroma_db/
+.tmp/
+
+# ── 凭据 ──
+.env
+.env.local
+
+# ── 前端 ──
+node_modules/
+frontend/dist/
+
+# ── 编辑器/系统 ──
+.idea/
+.vscode/
+*.log

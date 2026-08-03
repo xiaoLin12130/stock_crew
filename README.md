@@ -1,0 +1,85 @@
+# Stock Review Crew — A 股多智能体复盘系统
+
+全量重构版（2026-08-03）：FastAPI 后端 + React/Vite/ECharts 前端 + LangGraph 分析师流程，
+支持 **6 种时间模式复盘** 与 **分析师聊天**。需求契约见 `docs/requirements.md`（数据字典唯一真源）。
+
+## 功能
+
+- **6 模式复盘**：早盘前决策 / 竞价复盘 / 上午盘中 / 午间复盘 / 下午盘中 / 收盘复盘；
+  模式决定取数与提示词，历史日期可补做，数据缺失自动降级标注；
+- **分析师聊天**：与 5 位分析师（阿狼/爱在冰川/拔小弦/炒股养家/铁锤）单人或多人交叉问答，
+  上下文含标的数据与历史复盘结论，免责声明程序级强制；
+- **历史存储**：`data/reviews/{日期}/{时间}/`（meta+报告+快照），同日多份，支持删除；
+- **Codex 桌面风格前端**：深色侧栏、分步进度条、红涨绿跌、ECharts 图表、全中文。
+
+## 快速开始
+
+```powershell
+# 1. 环境（.venv 已含全部依赖；uv sync 需网络，走代理）
+$env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890'
+$env:TEMP='H:\stock_review_crew\.tmp'; $env:TMP='H:\stock_review_crew\.tmp'
+$env:UV_CACHE_DIR='H:\stock_review_crew\.tmp\uv-cache'
+uv sync
+
+# 2. 启动后端（静态托管前端 dist；端口 8501 被 synalysis 占用时用 8502）
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8501
+
+# 3. 打开 http://127.0.0.1:8501
+```
+
+开发前端：`cd frontend; npm run dev`（无后端时自动降级 mock）。
+
+## 测试与冒烟
+
+```powershell
+python -m pytest -p no:cacheprovider tests\test_backend.py tests\test_backend_chat.py tests\test_chat_engine.py tests\test_chat_history.py tests\test_chat_storage.py tests\test_data_auction.py tests\test_data_common.py tests\test_data_config.py tests\test_data_degrade.py tests\test_data_minute_lhb.py tests\test_data_modes.py tests\test_data_sentiment.py tests\test_data_tdx_local.py tests\test_graph.py tests\test_prompts.py tests\test_storage_import.py tests\test_storage_reviews.py
+#（PowerShell 不展开通配符，需显式列文件；当前 190 passed）
+```
+
+真实数据冒烟：`python scripts/smoke_review.py <YYYY-MM-DD> <mode>`（记录见 `docs/SMOKE.md`）。
+
+## 架构
+
+```
+backend/main.py            FastAPI：复盘任务(异步+进度轮询) / 历史 / 聊天 / 静态托管
+src/stock_review_crew/
+  graph.py                 6 模式感知 LangGraph（取数→资讯→趋势派→情绪派→主持人→辩论→报告）
+  prompts.py               6 模式提示词模板 + 主持人/复盘助手角色
+  chat.py                  聊天引擎（单/多分析师交叉，免责声明强制）
+  tools/stock_data.py      数据层：6 模式取数、超时≤30s、降级链、source/degraded 标注
+  tools/tdx_local.py       通达信本地数据只读解析（F:\tdx）
+  storage/reviews.py       历史复盘存储（同日多份/删除/上下文注入）
+  storage/chats.py         对话存储
+  knowledge_store.py       ChromaDB 历史复盘/对话检索
+frontend/                  React + Vite + ECharts（Codex 桌面风格）
+skills/                    5 位分析师 + 主持人 + 复盘助手（JSON 人格）
+```
+
+## 数据源与降级
+
+| 数据 | 主源 | 备用 | 备注 |
+|---|---|---|---|
+| 指数日线/均线 | 通达信 akshare | 通达信本地 | 长历史 |
+| 涨停/跌停/梯队 | 东财 | 同花顺/Tushare | 约 30 交易日 |
+| 板块涨幅/资金 | 同花顺 | 东财 | mini_racer 禁用时走东财 |
+| 分时/分钟线 | 东财 | 通达信本地 | 东财 HTTPS 已被改写为 HTTP |
+| 竞价数据 | 东财盘前分时（当日） | 开盘啦(需 Cookie) | 历史竞价标注缺失 |
+| 情绪指标 | Tushare | 东财/通达信本地 | — |
+| 龙虎榜 | 东财 | Tushare | — |
+
+降级链：主源 → 备用 → 本地缓存 → 明确标注「数据缺失/估算」，绝不静默错报。
+
+## 环境变量（.env，不入 git）
+
+| 变量 | 说明 |
+|---|---|
+| `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` | opencode 网关（https://opencode.ai/zen/go/v1） |
+| `TUSHARE_TOKEN` | Tushare Token |
+| `KAIPANLA_COOKIE` | 开盘啦登录 Cookie（可选，App 抓包获取） |
+| `TDX_PATH` | 通达信安装路径（F:\tdx） |
+
+## 文档
+
+- 需求契约：`docs/requirements.md`；踩坑手册：`docs/PLAYBOOK.md`
+- 进度与 agent 登记：`docs/PROGRESS.md`；issue 文本：`docs/issues.md`
+- 冒烟记录：`docs/SMOKE.md`；审计报告：`docs/audit-report.md`（Wave 3）
