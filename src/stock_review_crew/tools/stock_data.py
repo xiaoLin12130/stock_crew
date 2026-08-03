@@ -802,8 +802,51 @@ def _ts_name_map() -> dict:
     return _ts_name_cache
 
 
+def _zt_pool_from_ths(date: str) -> dict:
+    """同花顺免费接口备用：涨停池/连板池/炸板统计（无需 JS 签名）。"""
+    from .ths_crawler import ThsError, build_zt_block
+
+    try:
+        block = build_zt_block(date)
+    except ThsError as exc:
+        raise DataSourceError(f"同花顺: {exc}") from exc
+    limit_up = block.get("limit_up") or {}
+    limit_down = block.get("limit_down") or {}
+    zhaban = block.get("zhaban") or {}
+    return {
+        "limit_up": {
+            "count": limit_up.get("count"),
+            "tier": limit_up.get("tier", {}),
+            "stocks": limit_up.get("stocks", []),
+            "note": limit_up.get("note"),
+            "units": {"pct_change": "小数(0.05=5%)"},
+        },
+        "limit_down": {
+            "count": limit_down.get("count"),
+            "stocks": [],
+            "note": "跌停明细由东财/其他源补充",
+            "units": {"pct_change": "小数(0.05=5%)"},
+        },
+        "zhaban": {
+            "count": zhaban.get("count"),
+            "stocks": [],
+            "note": "炸板明细由东财/其他源补充",
+            "units": {"pct_change": "小数(0.05=5%)"},
+        },
+        "sealed_count": limit_up.get("count"),
+        "touched_count": zhaban.get("touched"),
+        "zhaban_rate": zhaban.get("zhaban_rate"),
+        "yesterday_zt_count": block.get("yesterday_zt_count"),
+        "seal_rate": block.get("seal_rate"),
+        "source": "同花顺",
+        "degraded": False,
+        "degraded_reason": [],
+        "note": "同花顺免费接口（连板高度为近似口径，跌停/炸板明细缺失）",
+    }
+
+
 def fetch_zt_pool(date: str) -> dict:
-    """涨跌停/炸板池：东财 → Tushare 计算 → 本地缓存 → 数据缺失。"""
+    """涨跌停/炸板池：东财 → 同花顺免费接口 → Tushare 计算 → 本地缓存 → 数据缺失。"""
     errors: list[str] = []
     try:
         block = _zt_pool_from_em(date)
@@ -811,6 +854,12 @@ def fetch_zt_pool(date: str) -> dict:
         return block
     except Exception as exc:
         errors.append(f"东财: {exc}")
+    try:
+        block = _zt_pool_from_ths(date)
+        _cache_save(date, "zt_pool", block)
+        return block
+    except Exception as exc:
+        errors.append(f"同花顺: {exc}")
     try:
         return _zt_pool_from_tushare(date)
     except Exception as exc:
@@ -1737,8 +1786,40 @@ def _sentiment_from_tdx(date: str, tdx_path: Optional[str]) -> dict:
     }
 
 
+def _sentiment_from_ths(date: str) -> dict:
+    """同花顺免费接口兜底：涨停/跌停/炸板统计口径（无个股明细，明确标注）。"""
+    from .ths_crawler import ThsError, build_zt_block
+
+    try:
+        block = build_zt_block(date)
+    except ThsError as exc:
+        raise DataSourceError(f"同花顺: {exc}") from exc
+    limit_up = block.get("limit_up") or {}
+    limit_down = block.get("limit_down") or {}
+    zhaban = block.get("zhaban") or {}
+    return {
+        "yesterday": date, "today": date,
+        "yesterday_zt_count": block.get("yesterday_zt_count"),
+        "matched_today": None,
+        "avg_return": None, "median_return": None, "red_rate": None,
+        "lianban_count": None, "lianban_rate": None,
+        "hean_count": None, "hean_rate": None,
+        "best3": [], "worst3": [],
+        "zhaban": zhaban.get("count"), "touched": zhaban.get("touched"),
+        "zhaban_rate": zhaban.get("zhaban_rate"),
+        "seal_rate": block.get("seal_rate"),
+        "limit_up_count": limit_up.get("count"),
+        "limit_down_count": limit_down.get("count"),
+        "up_count": None, "down_count": None, "up_down_ratio": None,
+        "raw": {"单位": "小数(0.05=5%)"},
+        "source": "同花顺", "degraded": True,
+        "degraded_reason": ["同花顺免费接口仅提供涨跌停/炸板统计，昨日涨停今日表现明细缺失"],
+        "note": "同花顺统计口径（无个股明细）",
+    }
+
+
 def fetch_sentiment(date: str, tdx_path: Optional[str] = None) -> dict:
-    """情绪指标：Tushare 计算 → 东财 → 通达信本地 → 本地缓存 → 数据缺失。"""
+    """情绪指标：Tushare 计算 → 东财 → 同花顺统计 → 通达信本地 → 本地缓存 → 数据缺失。"""
     errors: list[str] = []
     try:
         block = _sentiment_from_tushare(date)
@@ -1752,6 +1833,12 @@ def fetch_sentiment(date: str, tdx_path: Optional[str] = None) -> dict:
         return block
     except Exception as exc:
         errors.append(f"东财: {exc}")
+    try:
+        block = _sentiment_from_ths(date)
+        _cache_save(date, "sentiment", block)
+        return block
+    except Exception as exc:
+        errors.append(f"同花顺: {exc}")
     try:
         block = _sentiment_from_tdx(date, tdx_path)
         _cache_save(date, "sentiment", block)
