@@ -16,7 +16,10 @@
   config 兼容 DEEPSEEK_BASE_URL、.env 修复（BOM/拼接残留/换新 Tushare token/
   TDX_PATH）、.venv 补齐 fastapi/pytest（uv sync）
 - ✅ 真实数据冒烟：6 模式 + 聊天 + 窗口校验（详见 docs/SMOKE.md）
-- ⏳ Wave 3：R1 业务审计（Carver 运行中）
+- ✅ Wave 3：R1 业务审计完成（docs/audit-report.md；S1-1 聊天白名单、S2-1 涨跌比展示、
+  M1-2/M1-3/M1-4/M3 全部修复；复测 190 passed）
+- ✅ 交付：git 历史重写为单提交 `7953229`（旧 token 已从历史移除）并推送
+  stock_crew.git（main）；Cloudflare Tunnel 已部署（scripts/start_tunnel.ps1）
 - ⏳ Wave 2：I5 后端 API + 集成审查
 - ⏳ Wave 3：R1 业务逻辑审计 → 派发修复
 - ⏳ 冒烟：6 模式真实数据（2026-08-03 午间窗口 noon；其余近期交易日补做）
@@ -55,3 +58,4 @@
 - ✅ 已解决：网络 → 显式代理 127.0.0.1:7890（沙箱假代理 127.0.0.1:9 需覆盖）
 - ⏳ Wave 1 进行中：I1 数据层 / I2 复盘引擎 / I3 聊天引擎 / I6 前端（4 个运行中）
 - ⏳ 遗留：仓库根目录存在 agent 测试产生的临时目录（pt_*/sdc_*/sr_*/tmp* 等），集成阶段清理
+- ✅ 遗留已清理（探针目录已删；剩余已知环境性降级见 docs/SMOKE.md「环境性降级说明」）
