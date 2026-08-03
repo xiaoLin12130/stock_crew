@@ -403,8 +403,9 @@ def _ts_pro() -> Any:
         import tushare as ts
     except ImportError as exc:
         raise DataSourceError("未安装 tushare 库，Tushare 数据源不可用（走降级链）") from exc
-    ts.set_token(config.TUSHARE_TOKEN)
-    return ts.pro_api()
+    # 直接传 token 构造客户端：set_token 会写用户目录 tk.csv，
+    # 在只读/沙箱环境下会失败；pro_api(token) 不落盘。
+    return ts.pro_api(config.TUSHARE_TOKEN)
 
 
 def _ts_daily(trade_date: str) -> pd.DataFrame:

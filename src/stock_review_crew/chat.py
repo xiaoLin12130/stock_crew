@@ -82,6 +82,34 @@ def _call_llm(llm: Any, messages: list[dict]) -> str:
     return text
 
 
+def _stream_llm(llm: Any, messages: list[dict], on_delta) -> str:
+    """流式调用 LLM：逐块回调 on_delta(text)；不支持/失败时回退整段单次回调。"""
+    if llm is None:
+        raise RuntimeError("LLM 未配置")
+    full: list[str] = []
+    streamed = False
+    try:
+        for chunk in llm.stream(messages):
+            piece = getattr(chunk, "content", chunk)
+            if piece:
+                piece = str(piece)
+                full.append(piece)
+                on_delta(piece)
+                streamed = True
+    except Exception:
+        streamed = False
+        full = []
+    if not streamed:
+        text = _call_llm(llm, messages)
+        if text:
+            on_delta(text)
+        return text
+    text = "".join(full).strip()
+    if not text:
+        raise RuntimeError("LLM 流式返回空内容")
+    return text
+
+
 def _call_tool(func: Any, kwargs: dict) -> str:
     """兼容 langchain Tool（.invoke）与纯函数两种接口（I1 重写中）。"""
     try:
@@ -370,11 +398,11 @@ class ChatEngine:
         if len(segments) == 1:
             body = segments[0]["content"]
         else:
-            body = "\n\n".join(f"**【{s['name']}】**\n{s['content']}" for s in segments)
-            body += f"\n\n**【汇总】**\n{summary}"
+            body = "\n\n".join(f"{s['name']}：\n{s['content']}" for s in segments)
+            body += f"\n\n综合来看：\n{summary}"
         if degraded:
-            body += "\n\n> 降级说明：" + "；".join(dict.fromkeys(degraded))
-        body += f"\n\n---\n{DISCLAIMER}"
+            body += "\n\n（数据降级说明：" + "；".join(dict.fromkeys(degraded)) + "）"
+        body += f"\n\n{DISCLAIMER}"
 
         assistant_msg = {
             "role": "assistant",
@@ -397,6 +425,107 @@ class ChatEngine:
         # 以内存消息为准：持久化失败时仍返回完整对话，磁盘问题不阻塞主流程
         messages = session["messages"] + [user_msg, assistant_msg]
         return {"session_id": session_id, "messages": messages, "disclaimer": DISCLAIMER}
+
+    def stream_message(self, session_id: str, content: str, emit) -> Optional[dict]:
+        """流式版 send_message：emit(event, payload) 逐步推送事件；返回与 send_message 相同的字典。
+
+        事件序列：meta → user_msg →（每分析师）analyst_start → analyst_delta* → analyst_end
+                  → summary_start → summary_delta* → summary_end → done（最终消息字典）。
+        任何异常不抛出，改为 error 事件后以 done 收尾（与降级口径一致）。
+        """
+        content = str(content or "").strip()
+        if not content:
+            raise ValueError("消息内容不能为空")
+        session = chat_storage.get_session(session_id, root=self.storage_root)
+        if session is None:
+            return None
+        meta = session["meta"]
+        degraded: list[str] = []
+        emit("meta", {"session_id": session_id})
+
+        user_msg = {"role": "user", "content": content, "created_at": _now_iso()}
+        try:
+            chat_storage.append_message(session_id, user_msg, root=self.storage_root)
+        except Exception as e:
+            degraded.append(f"消息持久化失败：{e}")
+        emit("user_msg", user_msg)
+
+        prev_round_reply = None
+        for m in reversed(session["messages"]):
+            if m.get("role") == "assistant":
+                prev_round_reply = str(m.get("content") or "")
+                break
+
+        context, issues = self._build_context(meta, content, session["messages"])
+        degraded.extend(issues)
+
+        llm = self.llm if self.llm is not None else _get_default_llm()
+        if llm is None:
+            degraded.append("LLM 未配置或无可用 Key")
+
+        segments = []
+        for i, analyst_id in enumerate(meta["analysts"]):
+            analyst = load_analyst(analyst_id)
+            if analyst is None:
+                text = f"（分析师 {analyst_id} 人格信息缺失，暂无法回答）"
+                segments.append({"id": analyst_id, "name": analyst_id, "content": text})
+                degraded.append(f"分析师 {analyst_id} 人格缺失")
+                continue
+            name = analyst.get("name", analyst_id)
+            emit("analyst_start", {"index": i, "analyst_id": analyst_id, "name": name})
+            try:
+                text = self._ask_analyst(
+                    analyst, i, content, context, segments, prev_round_reply, llm,
+                    on_delta=lambda delta, idx=i, nm=name: (
+                        emit("analyst_delta", {"index": idx, "name": nm, "delta": delta})
+                    ),
+                )
+                segments.append({"id": analyst_id, "name": name, "content": text})
+            except Exception as e:
+                text = f"（{name}：分析服务暂时不可用，请稍后重试）"
+                segments.append({"id": analyst_id, "name": name, "content": text})
+                degraded.append(f"分析师 {analyst_id} 生成失败：{e}")
+                emit("analyst_delta", {"index": i, "name": name, "delta": text})
+            emit("analyst_end", {"index": i, "name": name, "content": text})
+
+        emit("summary_start", {})
+        summary = self._make_summary(
+            content, segments, llm, degraded,
+            on_delta=lambda delta: emit("summary_delta", {"delta": delta}),
+        )
+        emit("summary_end", {"content": summary})
+
+        if len(segments) == 1:
+            body = segments[0]["content"]
+        else:
+            body = "\n\n".join(f"{s['name']}：\n{s['content']}" for s in segments)
+            body += f"\n\n综合来看：\n{summary}"
+        if degraded:
+            body += "\n\n（数据降级说明：" + "；".join(dict.fromkeys(degraded)) + "）"
+        body += f"\n\n{DISCLAIMER}"
+
+        assistant_msg = {
+            "role": "assistant",
+            "content": body,
+            "analysts": segments,
+            "summary": summary,
+            "degraded": degraded,
+            "created_at": _now_iso(),
+        }
+        try:
+            chat_storage.append_message(session_id, assistant_msg, root=self.storage_root)
+        except Exception as e:
+            degraded.append(f"消息持久化失败：{e}")
+            assistant_msg["degraded"] = degraded
+
+        if self.history_enabled:
+            save_chat_history(session_id, "user", content)
+            save_chat_history(session_id, "assistant", body, analyst="all")
+
+        messages = session["messages"] + [user_msg, assistant_msg]
+        result = {"session_id": session_id, "messages": messages, "disclaimer": DISCLAIMER}
+        emit("done", result)
+        return result
 
     # ── 上下文组装 ──
     def _build_context(self, meta: dict, user_content: str, history_messages: list[dict]):
@@ -480,6 +609,7 @@ class ChatEngine:
         prev_segments: list[dict],
         prev_round_reply: Optional[str],
         llm: Any,
+        on_delta: Optional[Callable[[str], None]] = None,
     ) -> str:
         name = analyst.get("name", analyst.get("id", "分析师"))
         system = (
@@ -487,21 +617,30 @@ class ChatEngine:
             f"【本次任务】你是「{name}」，正在与用户就标的进行多轮聊天。"
             "请用中文、以你的人设与交易体系回答问题。上下文中的数据可能缺失或降级，"
             "缺失时请明确说明，禁止编造数据。"
+            "输出要求：用自然口语化中文直接回答，不要使用任何 Markdown 标记"
+            "（不要 **、#、- 列表、表格），像聊天一样自然。"
+            "重要：即使标的数据缺失，也不要拒绝回答或抱怨数据问题——"
+            "请基于你的交易体系和市场常识给出定性判断（方向、关注点、风险），"
+            "末尾用一句话说明『具体数据暂缺，结论为定性参考』即可。"
         )
         user = context
         if prev_round_reply:
             user += f"\n\n上一轮回答摘要：{prev_round_reply[:800]}"
         if index == 0:
-            user += "\n\n【指令】请直接回答用户的问题，结合上下文给出你的判断与理由（400 字以内）。"
+            user += "\n\n【指令】请直接回答用户的问题，结合上下文给出你的判断与理由（400 字以内，口语化）。"
         else:
             prev = prev_segments[-1]
             user += (
                 f"\n\n【指令】请对「{prev['name']}」的回答表态（同意/反对/补充理由），"
-                f"并结合你的体系补充你的结论（250 字以内）。"
+                f"并结合你的体系补充你的结论（250 字以内，口语化）。"
             )
-        return _call_llm(llm, [{"role": "system", "content": system}, {"role": "user", "content": user}])
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        if on_delta is not None:
+            return _stream_llm(llm, messages, on_delta)
+        return _call_llm(llm, messages)
 
-    def _make_summary(self, user_content: str, segments: list[dict], llm: Any, degraded: list[str]) -> str:
+    def _make_summary(self, user_content: str, segments: list[dict], llm: Any, degraded: list[str],
+                      on_delta: Optional[Callable[[str], None]] = None) -> str:
         """单分析师直接返回其回答；多分析师调用 LLM 汇总，失败降级为中文说明。"""
         if len(segments) <= 1:
             return segments[0]["content"] if segments else "（无分析师观点）"
@@ -509,17 +648,19 @@ class ChatEngine:
             degraded.append("汇总生成失败：LLM 未配置")
             return "（分析服务暂不可用，未能生成汇总）"
         payload = {"user": user_content, "analysts": [{"name": s["name"], "content": s["content"]} for s in segments]}
+        messages = [
+            {
+                "role": "system",
+                "content": "你是多分析师聊天的汇总角色。请用中文汇总各位分析师的回答："
+                           "共同观点、分歧点、以及给用户的可执行结论。"
+                           "口语化输出，不要使用任何 Markdown 标记（不要 **、#、列表）。",
+            },
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ]
         try:
-            return _call_llm(
-                llm,
-                [
-                    {
-                        "role": "system",
-                        "content": "你是多分析师聊天的汇总角色。请用中文汇总各位分析师的回答：共同观点、分歧点、以及给用户的可执行结论。不要编造数据。",
-                    },
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-                ],
-            )
+            if on_delta is not None:
+                return _stream_llm(llm, messages, on_delta)
+            return _call_llm(llm, messages)
         except Exception as e:
             degraded.append(f"汇总生成失败：{e}")
             return "（以上为各位分析师的逐位回答，汇总生成失败——服务降级）"

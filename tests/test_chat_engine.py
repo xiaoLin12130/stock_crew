@@ -120,7 +120,7 @@ def test_multi_analyst_cross_qa(chat_tmp):
     assert assistant["analysts"][0]["content"] == "首答"
     assert assistant["analysts"][1]["content"] == "表态"
     assert assistant["summary"] == "汇总"
-    assert "【汇总】" in assistant["content"]
+    assert "综合来看：" in assistant["content"]
     assert "阿狼" in assistant["content"] and "炒股养家" in assistant["content"]
     assert assistant["content"].endswith(DISCLAIMER)
     assert assistant["degraded"] == []

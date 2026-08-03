@@ -21,8 +21,10 @@ default_initial_state + invoke）-> save_review 落盘（meta/report/snapshot �
 
 from __future__ import annotations
 
+import json
 import logging
 import math
+import queue
 import re
 import sys
 import threading
@@ -35,7 +37,7 @@ from typing import Any, Optional
 from fastapi import Body, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -743,6 +745,50 @@ def send_chat_message(session_id: str, payload: Any = Body(...)) -> dict[str, An
     if result is None:
         raise HTTPException(status_code=404, detail="会话不存在")
     return result
+
+
+@app.post("/api/chat/sessions/{session_id}/messages/stream")
+def stream_chat_message(session_id: str, payload: Any = Body(...)) -> StreamingResponse:
+    """SSE 流式聊天：POST 后持续返回 event-stream，事件见 ChatEngine.stream_message。
+
+    长任务在 daemon 线程执行，事件经队列转发；前端逐 token 渲染（Codex 式对话体验）。
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="请求体必须是 JSON 对象")
+    content = str(payload.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="消息内容不能为空")
+    engine = _chat_engine()
+    if engine.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    events: "queue.Queue" = queue.Queue()
+
+    def worker() -> None:
+        try:
+            engine.stream_message(session_id, content, emit=lambda ev, pl: events.put((ev, pl)))
+        except Exception as exc:  # noqa: BLE001 - SSE 内兜底，避免断流
+            try:
+                events.put(("error", {"message": f"聊天失败：{exc}"}))
+            except Exception:
+                pass
+        finally:
+            events.put(("__end__", None))
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def gen():
+        while True:
+            ev, pl = events.get()
+            if ev == "__end__":
+                break
+            yield f"event: {ev}\ndata: {json.dumps(pl, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/chat/sessions/{session_id}")

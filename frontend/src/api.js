@@ -195,6 +195,103 @@ export async function sendChatMessage(sessionId, content) {
   }
 }
 
+// SSE 流式聊天：POST /api/chat/sessions/{id}/messages/stream
+// onEvent(event, payload)：meta / user_msg / analyst_start / analyst_delta / analyst_end /
+//                         summary_start / summary_delta / summary_end / done / error
+export async function streamChatMessage(sessionId, content, onEvent) {
+  const session = mockChatSessions.find((s) => s.session_id === sessionId);
+  if (session) return mockStreamChatMessage(session, content, onEvent);
+
+  let res;
+  try {
+    res = await fetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}/messages/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    });
+  } catch (err) {
+    if (canFallback()) return mockStreamChatMessage(sessionId, content, onEvent);
+    throw new ApiError("无法连接后端服务，请确认服务已启动");
+  }
+  if (!res.ok) throw await errorFrom(res, "发送消息失败");
+  if (!res.body) throw new ApiError("后端不支持流式响应，请刷新后重试");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      let ev = "message";
+      let data = "";
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) ev = line.slice(6).trim();
+        else if (line.startsWith("data:")) data = line.slice(5).trim();
+      }
+      if (data) {
+        let payload;
+        try {
+          payload = JSON.parse(data);
+        } catch {
+          payload = { raw: data };
+        }
+        onEvent(ev, payload);
+      }
+    }
+  }
+}
+
+// 离线 mock：模拟逐块流式事件（结构与后端 SSE 一致）
+function mockStreamChatMessage(session, content, onEvent) {
+  const reply = mockChatReply(session.meta, content);
+  const [userMsg, assistantMsg] = reply;
+  const sid = typeof session === "string" ? session : session.session_id;
+  const meta = typeof session === "string" ? { target_type: "stock", target: "mock", analysts: [] } : session.meta;
+  onEvent("meta", { session_id: sid });
+  onEvent("user_msg", userMsg);
+  if (typeof session !== "string") session.messages.push(userMsg);
+  const text = assistantMsg.content || "";
+  const step = Math.max(3, Math.ceil(text.length / 25));
+  const chunks = [];
+  for (let i = 0; i < text.length; i += step) chunks.push(text.slice(i, i + step));
+  const name = assistantMsg.analyst_name || (meta.analysts && meta.analysts[0]) || "分析师";
+  onEvent("analyst_start", { index: 0, name });
+  return new Promise((resolve) => {
+    let i = 0;
+    const timer = setInterval(() => {
+      if (i < chunks.length) {
+        onEvent("analyst_delta", { index: 0, name, delta: chunks[i] });
+        i += 1;
+      } else {
+        clearInterval(timer);
+        onEvent("analyst_end", { index: 0, name, content: text });
+        onEvent("summary_start", {});
+        onEvent("summary_end", { content: "" });
+        if (typeof session !== "string") {
+          session.messages.push(assistantMsg);
+          onEvent("done", {
+            session_id: sid,
+            messages: session.messages,
+            disclaimer: session.disclaimer || "仅供参考，不构成投资建议",
+          });
+        } else {
+          onEvent("done", {
+            session_id: sid,
+            messages: [userMsg, assistantMsg],
+            disclaimer: "仅供参考，不构成投资建议",
+          });
+        }
+        resolve();
+      }
+    }, 40);
+  });
+}
+
 // GET /api/chat/sessions?target=&date=
 export async function listChatSessions(filters = {}) {
   try {

@@ -9,6 +9,7 @@
 
 import os
 
+import json
 import re
 import shutil
 import sys
@@ -52,6 +53,14 @@ class FakeLLM:
         text = self.texts[min(self._i, len(self.texts) - 1)]
         self._i += 1
         return type("MockAIMessage", (), {"content": text})()
+
+
+class FakeStreamLLM(FakeLLM):
+    """带 .stream() 的 FakeLLM：每次调用返回整段文本（单块流）。"""
+
+    def stream(self, messages):
+        result = self.invoke(messages)
+        yield type("MockAIMessage", (), {"content": result.content})()
 
 
 @pytest.fixture()
@@ -253,3 +262,49 @@ def test_chat_single_analyst_reply(iso_dirs, monkeypatch):
     assistant = r.json()["messages"][-1]
     assert assistant["content"].rstrip().endswith("仅供参考，不构成投资建议")
     assert "单分析师回答" in assistant["content"]
+
+
+# ── SSE 流式端点：事件序列完整 → done（含免责声明与全量消息）──
+
+def test_chat_stream_sse_events(iso_dirs, monkeypatch):
+    monkeypatch.setattr(chat, "_get_default_llm", lambda: FakeStreamLLM(["首答", "表态", "汇总"]))
+    r = client.post(
+        "/api/chat/sessions",
+        json={"target_type": "stock", "target": "600519", "analysts": ["alang", "yangjia"], "title": "流式测试"},
+    )
+    assert r.status_code == 200, r.text
+    sid = r.json()["session_id"]
+
+    events = []
+    with client.stream("POST", f"/api/chat/sessions/{sid}/messages/stream", json={"content": "大盘怎么看？"}) as resp:
+        assert resp.status_code == 200, resp.text
+        assert resp.headers.get("content-type", "").startswith("text/event-stream")
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            if line.startswith("event:"):
+                events.append({"event": line[6:].strip(), "data": ""})
+            elif line.startswith("data:"):
+                if events:
+                    events[-1]["data"] = line[5:].strip()
+
+    ev_names = [e["event"] for e in events]
+    for required in (
+        "meta", "user_msg", "analyst_start", "analyst_delta", "analyst_end",
+        "summary_start", "summary_delta", "summary_end", "done",
+    ):
+        assert required in ev_names, f"缺少事件 {required}: {ev_names}"
+    assert ev_names[-1] == "done"
+
+    done = json.loads(events[-1]["data"])
+    assert done["session_id"] == sid
+    assert done["disclaimer"] == "仅供参考，不构成投资建议"
+    msgs = done["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+    content = msgs[-1]["content"]
+    assert content.rstrip().endswith("仅供参考，不构成投资建议")
+    assert "首答" in content and "表态" in content
+    assert "综合来看：" in content
+    # 单块流：analyst_delta 应包含整段回答
+    deltas = [e["data"] for e in events if e["event"] == "analyst_delta"]
+    assert any("首答" in d for d in deltas)

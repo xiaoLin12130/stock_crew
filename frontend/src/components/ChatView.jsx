@@ -22,8 +22,17 @@ export default function ChatView({
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState("");
+  const [live, setLive] = useState(null); // {parts:[{name,text}], summary, phase}
   const createdRef = useRef(null);
   const scrollRef = useRef(null);
+
+  // 展示层清理：聊天回复为自然口语文本，防御性剥离遗留 Markdown 标记
+  const plain = (t) =>
+    String(t || "")
+      .replace(/\*\*/g, "")
+      .replace(/^#{1,6}\s*/gm, "")
+      .replace(/^>\s?/gm, "")
+      .trim();
 
   const filtered = useMemo(() => {
     const t = filterTarget.trim();
@@ -90,32 +99,73 @@ export default function ChatView({
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [session && session.messages.length]);
+  }, [session && session.messages.length, live]);
 
   const handleSend = async () => {
     const text = input.trim();
     if (!text || !session || sending) return;
     setSending(true);
     setSendError("");
+    setInput("");
+    setLive({ parts: [], summary: "", phase: "idle" });
     try {
-      const res = await api.sendChatMessage(session.meta.session_id, text);
-      const newMsgs = (Array.isArray(res.messages) ? res.messages : []).map((m, i) => normalizeChatMessage(m, i));
-      setSession((prev) => {
-        if (!prev) return prev;
-        const messages =
-          newMsgs.length > prev.messages.length
-            ? newMsgs // 后端返回全量消息
-            : [...prev.messages, ...newMsgs];
-        return {
-          ...prev,
-          messages,
-          disclaimer: res.disclaimer || prev.disclaimer,
-        };
+      await api.streamChatMessage(session.meta.session_id, text, (ev, pl) => {
+        if (ev === "user_msg") {
+          setSession((prev) =>
+            prev ? { ...prev, messages: [...prev.messages, pl] } : prev
+          );
+        } else if (ev === "analyst_start") {
+          setLive((prev) => ({
+            ...(prev || { parts: [], summary: "", phase: "idle" }),
+            phase: "parts",
+            parts: [...(prev ? prev.parts : []), { name: pl.name || "", text: "" }],
+          }));
+        } else if (ev === "analyst_delta") {
+          setLive((prev) => {
+            if (!prev) return prev;
+            const parts = prev.parts.slice();
+            const idx = Math.min(Number(pl.index) || 0, parts.length - 1);
+            if (idx < 0) return prev;
+            parts[idx] = {
+              name: pl.name || parts[idx].name,
+              text: parts[idx].text + (pl.delta || ""),
+            };
+            return { ...prev, parts };
+          });
+        } else if (ev === "analyst_end") {
+          setLive((prev) => {
+            if (!prev) return prev;
+            const parts = prev.parts.slice();
+            const idx = Math.min(Number(pl.index) || 0, parts.length - 1);
+            if (idx >= 0) parts[idx] = { name: pl.name || parts[idx].name, text: pl.content || parts[idx].text };
+            return { ...prev, parts };
+          });
+        } else if (ev === "summary_start") {
+          setLive((prev) => ({ ...(prev || { parts: [], summary: "", phase: "idle" }), phase: "summary" }));
+        } else if (ev === "summary_delta") {
+          setLive((prev) => (prev ? { ...prev, summary: prev.summary + (pl.delta || "") } : prev));
+        } else if (ev === "summary_end") {
+          setLive((prev) => (prev ? { ...prev, summary: pl.content || prev.summary, phase: "done" } : prev));
+        } else if (ev === "done") {
+          const msgs = (Array.isArray(pl.messages) ? pl.messages : []).map((m, i) => normalizeChatMessage(m, i));
+          setSession((prev) => ({
+            ...(prev || {}),
+            messages: msgs,
+            disclaimer: pl.disclaimer || (prev && prev.disclaimer) || "仅供参考，不构成投资建议",
+          }));
+          setLive(null);
+          setSending(false);
+          onRefreshSessions();
+        } else if (ev === "error") {
+          setSendError((pl && pl.message) || "发送失败，请重试");
+          setLive(null);
+          setSending(false);
+        }
       });
-      setInput("");
-      onRefreshSessions();
     } catch (err) {
       setSendError((err && err.message) || "发送失败，请重试");
+      setLive(null);
+      setSending(false);
     } finally {
       setSending(false);
     }
@@ -225,7 +275,7 @@ export default function ChatView({
                 session.messages.map((m) =>
                   m.isUser ? (
                     <div key={m.id} className="msg user">
-                      <div className="msg-bubble">{m.content}</div>
+                      <div className="msg-bubble">{plain(m.content)}</div>
                     </div>
                   ) : m.isMulti ? (
                     <div key={m.id} className="msg multi">
@@ -233,32 +283,54 @@ export default function ChatView({
                       {m.analyst_parts.map((p, i) => (
                         <div key={i} className="msg-part">
                           <span className="msg-part-name">{p.skill_name || `分析师 ${i + 1}`}</span>
-                          <div className="msg-part-content">{p.content}</div>
+                          <div className="msg-part-content">{plain(p.content)}</div>
                         </div>
                       ))}
                       <div className="msg-summary">
                         <b>汇总</b>
-                        <div>{m.content}</div>
+                        <div>{plain(m.content)}</div>
                       </div>
                     </div>
                   ) : (
                     <div key={m.id} className="msg">
                       <div className="msg-bubble">
                         {m.analyst_name ? <div className="msg-analyst-name">{m.analyst_name}</div> : null}
-                        {m.content}
+                        {plain(m.content)}
                       </div>
                     </div>
                   )
                 )
               )}
+              {live && (live.parts.length > 0 || live.summary) ? (
+                <div className="msg multi streaming">
+                  <div className="msg-multi-head">
+                    {live.parts.length > 1 ? "🤝 多位分析师回复中" : "✍️ 回复中"}
+                  </div>
+                  {live.parts.map((p, i) => (
+                    <div key={i} className="msg-part">
+                      <span className="msg-part-name">{p.name || `分析师 ${i + 1}`}</span>
+                      <div className="msg-part-content">
+                        {plain(p.text)}
+                        {live.phase === "parts" && i === live.parts.length - 1 ? (
+                          <span className="cursor">▍</span>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                  {live.summary ? (
+                    <div className="msg-summary">
+                      <b>综合来看</b>
+                      <div>
+                        {plain(live.summary)}
+                        {live.phase === "summary" ? <span className="cursor">▍</span> : null}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
 
             {sendError ? <div className="upload-error">{sendError}</div> : null}
-            {sending ? (
-              <div className="chat-hint">
-                分析师正在思考…（多分析师交叉为串行推理，通常约 1-3 分钟，请勿重复发送）
-              </div>
-            ) : null}
             <div className="chat-input-row">
               <input
                 className="chat-input"
@@ -274,7 +346,7 @@ export default function ChatView({
                 }}
               />
               <button className="btn btn-accent" disabled={sending || !input.trim()} onClick={handleSend}>
-                {sending ? "回复中…" : "发送"}
+                {sending ? "发送中…" : "发送"}
               </button>
             </div>
             <div className="chat-disclaimer">
