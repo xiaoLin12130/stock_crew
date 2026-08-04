@@ -128,39 +128,103 @@ def fetch_indices_tx() -> dict[str, Any]:
 
 def fetch_sector_flow() -> dict[str, Any]:
     """行业板块涨幅 + 主力净流入（东财 clist fid=f62，实时）。"""
-    data = _http_json(
-        f"{_EM}/clist/get",
-        {
-            "pn": 1, "pz": 60, "po": 1, "np": 1, "fltt": 2, "invt": 2,
-            "fid": "f62", "fs": "m:90+t:2+f:!50",
-            "fields": "f3,f12,f14,f62",
-        },
-    )
-    diff = (data.get("data") or {}).get("diff") or []
-    rows = []
-    for r in diff:
-        pct = _to_float(r.get("f3"))
-        net = _to_float(r.get("f62"))
-        rows.append(
+    em_err: Optional[Exception] = None
+    try:
+        data = _http_json(
+            f"{_EM}/clist/get",
             {
-                "name": r.get("f14"),
-                "pct_change": round(pct / 100.0, 6) if pct is not None else None,
-                "net_inflow": net,  # 元
-            }
+                "pn": 1, "pz": 60, "po": 1, "np": 1, "fltt": 2, "invt": 2,
+                "fid": "f62", "fs": "m:90+t:2+f:!50",
+                "fields": "f3,f12,f14,f62",
+            },
         )
-    if not rows:
-        raise RealtimeError("东财板块资金流实时无数据")
-    with_pct = [r for r in rows if r.get("pct_change") is not None]
-    with_flow = [r for r in rows if r.get("net_inflow") is not None]
+        diff = (data.get("data") or {}).get("diff") or []
+        rows = []
+        for r in diff:
+            pct = _to_float(r.get("f3"))
+            net = _to_float(r.get("f62"))
+            rows.append(
+                {
+                    "name": r.get("f14"),
+                    "pct_change": round(pct / 100.0, 6) if pct is not None else None,
+                    "net_inflow": net,  # 元
+                }
+            )
+        if rows:
+            with_pct = [r for r in rows if r.get("pct_change") is not None]
+            with_flow = [r for r in rows if r.get("net_inflow") is not None]
+            return {
+                "top": sorted(with_pct, key=lambda x: x["pct_change"], reverse=True)[:5],
+                "bottom": sorted(with_pct, key=lambda x: x["pct_change"])[:5],
+                "flow_in": sorted(with_flow, key=lambda x: x["net_inflow"], reverse=True)[:5],
+                "flow_out": sorted(with_flow, key=lambda x: x["net_inflow"])[:5],
+                "source": "东财实时",
+                "degraded": False,
+                "degraded_reason": [],
+                "units": {"pct_change": "小数(0.05=5%)", "net_inflow": "元"},
+            }
+    except Exception as exc:  # noqa: BLE001
+        em_err = exc
+    # 备用：浏览器解析同花顺板块页（页面 JS 签名自动执行）
+    try:
+        from .browser_crawler import fetch_ths_sector_rows
+
+        rows = fetch_ths_sector_rows()
+        with_pct = [r for r in rows if r.get("涨跌幅") is not None]
+        with_flow = [r for r in rows if r.get("净流入") is not None]
+        norm = lambda r: {  # noqa: E731
+            "name": r.get("板块"),
+            "pct_change": round(float(r["涨跌幅"]) / 100.0, 6),
+            "net_inflow": r.get("净流入"),
+        }
+        return {
+            "top": sorted((norm(r) for r in with_pct), key=lambda x: x["pct_change"], reverse=True)[:5],
+            "bottom": sorted((norm(r) for r in with_pct), key=lambda x: x["pct_change"])[:5],
+            "flow_in": sorted((norm(r) for r in with_flow), key=lambda x: x["net_inflow"] or 0, reverse=True)[:5],
+            "flow_out": sorted((norm(r) for r in with_flow), key=lambda x: x["net_inflow"] or 0)[:5],
+            "source": "同花顺(浏览器)",
+            "degraded": False,
+            "degraded_reason": [],
+            "units": {"pct_change": "小数(0.05=5%)", "net_inflow": "元"},
+        }
+    except Exception as exc:  # noqa: BLE001
+        raise RealtimeError(f"板块数据失败：东财({em_err})；浏览器({exc})") from exc
+
+
+def _secid(code: str) -> str:
+    code = str(code or "").strip().zfill(6)
+    if code.startswith(("6", "9")):
+        return f"1.{code}"
+    return f"0.{code}"
+
+
+def fetch_stock_quote(code: str) -> dict[str, Any]:
+    """个股实时行情（东财 push2 stock/get，fltt=2 已小数化；涨跌幅百分数 → /100）。"""
+    secid = _secid(code)
+    data = _http_json(
+        f"{_EM}/stock/get",
+        {"secid": secid, "fields": "f43,f44,f45,f46,f47,f48,f57,f58,f60,f169,f170",
+         "fltt": 2, "invt": 2},
+    )
+    d = data.get("data") or {}
+    if not d or d.get("f43") in (None, "-"):
+        raise RealtimeError(f"未查询到 {code} 的实时行情（代码可能错误或停牌）")
+    pct = _to_float(d.get("f170"))
+    turnover = _to_float(d.get("f169"))
     return {
-        "top": sorted(with_pct, key=lambda x: x["pct_change"], reverse=True)[:5],
-        "bottom": sorted(with_pct, key=lambda x: x["pct_change"])[:5],
-        "flow_in": sorted(with_flow, key=lambda x: x["net_inflow"], reverse=True)[:5],
-        "flow_out": sorted(with_flow, key=lambda x: x["net_inflow"])[:5],
+        "code": str(d.get("f57") or code).zfill(6),
+        "name": d.get("f58"),
+        "price": _to_float(d.get("f43")),
+        "pct_change": round(pct / 100.0, 6) if pct is not None else None,
+        "open": _to_float(d.get("f46")),
+        "high": _to_float(d.get("f44")),
+        "low": _to_float(d.get("f45")),
+        "pre_close": _to_float(d.get("f60")),
+        "volume": _to_float(d.get("f47")),
+        "amount": _to_float(d.get("f48")),
+        "turnover_rate": round(turnover / 100.0, 6) if turnover is not None else None,
         "source": "东财实时",
-        "degraded": False,
-        "degraded_reason": [],
-        "units": {"pct_change": "小数(0.05=5%)", "net_inflow": "元"},
+        "units": {"pct_change": "小数(0.05=5%)", "turnover_rate": "小数"},
     }
 
 

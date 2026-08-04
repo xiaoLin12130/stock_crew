@@ -1006,6 +1006,34 @@ a { color: var(--accent); }
   color: var(--text-2);
 }
 
+.rt-quote { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
+
+.rt-quote-row { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+
+.rt-quote-box {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fbfbfa;
+}
+
+.rt-quote-name { font-size: 15px; font-weight: 700; }
+.rt-quote-code { font-size: 11px; color: var(--text-2); margin-left: 6px; font-weight: 400; }
+.rt-quote-price { font-size: 24px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.rt-quote-pct { font-size: 14px; font-weight: 700; }
+.rt-quote-meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--text-2);
+  margin-left: auto;
+}
+
 /* ---------- 滚动条 ---------- */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: #d3d6d1; border-radius: 4px; }

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "../api";
 import { ANALYSTS } from "../mock";
-import { DEFAULT_MODE, MODES, modeLabel, todayStr, windowHints } from "../modes";
+import { currentMode, DEFAULT_MODE, MODES, modeLabel, nowMinutes, todayStr, windowHints, isTradingDay } from "../modes";
 import { fmtDate, fmtTimeHM } from "../format";
 
 export default function HomeView({
@@ -17,6 +17,7 @@ export default function HomeView({
   const [maxRounds, setMaxRounds] = useState(2);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
+  const [autoModeNote, setAutoModeNote] = useState("");
 
   const [targetType, setTargetType] = useState("stock");
   const [target, setTarget] = useState("");
@@ -29,6 +30,10 @@ export default function HomeView({
   const [rtError, setRtError] = useState("");
   const [rtAuto, setRtAuto] = useState(false);
   const rtTimer = useRef(null);
+  const [quoteCode, setQuoteCode] = useState("");
+  const [quote, setQuote] = useState(null);
+  const [quoteLoading, setQuoteLoading] = useState(false);
+  const [quoteError, setQuoteError] = useState("");
 
   const loadRealtime = useCallback(async () => {
     setRtLoading(true);
@@ -59,6 +64,45 @@ export default function HomeView({
       if (rtTimer.current) clearInterval(rtTimer.current);
     };
   }, [rtAuto, loadRealtime]);
+
+  // 时间模式自动选择：日期为今天时按当前时间点选择最合适模式
+  const applyAutoMode = useCallback((dateStr) => {
+    if (dateStr !== todayStr()) {
+      setAutoModeNote("");
+      return;
+    }
+    if (!isTradingDay(dateStr)) {
+      setAutoModeNote("今天非交易日，未自动选择盘中模式；可手动选择历史补做模式。");
+      return;
+    }
+    const cur = currentMode(nowMinutes());
+    setMode(cur);
+    setAutoModeNote(`已按当前时间自动选择：${modeLabel(cur)}（可手动切换）`);
+  }, []);
+
+  useEffect(() => {
+    applyAutoMode(date);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const loadQuote = useCallback(async (code) => {
+    const c = String(code || "").trim();
+    if (!/^\d{6}$/.test(c)) {
+      setQuoteError("请输入 6 位股票代码，如 600519");
+      return;
+    }
+    setQuoteLoading(true);
+    setQuoteError("");
+    try {
+      const q = await api.getStockQuote(c);
+      setQuote(q);
+    } catch (err) {
+      setQuoteError((err && err.message) || "行情查询失败");
+      setQuote(null);
+    } finally {
+      setQuoteLoading(false);
+    }
+  }, []);
 
   const hints = useMemo(() => windowHints(mode, date), [mode, date]);
 
@@ -121,13 +165,29 @@ export default function HomeView({
             type="date"
             className="form-input"
             value={date}
-            onChange={(e) => setDate(e.target.value)}
+            onChange={(e) => {
+              setDate(e.target.value);
+              applyAutoMode(e.target.value);
+            }}
           />
           <div className="form-note">历史日期可补做任意模式；数据源无历史时将标注「数据缺失」并继续流程</div>
         </div>
 
         <div className="form-row">
           <label className="form-label">时间模式</label>
+          <div className="form-note">
+            {autoModeNote || "系统将在打开页面时按当前时间自动选择；历史日期请手动选择"}
+            {autoModeNote ? (
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs"
+                style={{ marginLeft: 8 }}
+                onClick={() => applyAutoMode(date)}
+              >
+                重新按当前时间选择
+              </button>
+            ) : null}
+          </div>
           <div className="mode-grid">
             {MODES.map((m) => (
               <button
@@ -452,6 +512,56 @@ export default function HomeView({
             ))}
           </div>
         ) : null}
+
+        {/* 个股实时行情 */}
+        <div className="rt-quote">
+          <div className="rt-col-title">个股实时行情</div>
+          <div className="rt-quote-row">
+            <input
+              className="search-input"
+              style={{ maxWidth: 200 }}
+              placeholder="输入 6 位股票代码，如 600519"
+              value={quoteCode}
+              onChange={(e) => setQuoteCode(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") loadQuote(quoteCode);
+              }}
+            />
+            <button className="btn btn-outline btn-sm" onClick={() => loadQuote(quoteCode)} disabled={quoteLoading}>
+              {quoteLoading ? "查询中…" : "查询"}
+            </button>
+          </div>
+          {quoteError ? <div className="upload-error">{quoteError}</div> : null}
+          {quote ? (
+            <div className="rt-quote-box">
+              <div className="rt-quote-name">
+                {quote.name || "—"}
+                <span className="rt-quote-code">{quote.code}</span>
+              </div>
+              <div className={`rt-quote-price ${quote.pct_change > 0 ? "pos" : quote.pct_change < 0 ? "neg" : "zero"}`}>
+                {Number.isFinite(Number(quote.price)) ? Number(quote.price).toFixed(2) : "—"}
+              </div>
+              <div className={`rt-quote-pct ${quote.pct_change > 0 ? "pos" : quote.pct_change < 0 ? "neg" : "zero"}`}>
+                {Number.isFinite(Number(quote.pct_change))
+                  ? `${quote.pct_change >= 0 ? "+" : ""}${(quote.pct_change * 100).toFixed(2)}%`
+                  : "—"}
+              </div>
+              <div className="rt-quote-meta">
+                <span>今开 {Number.isFinite(Number(quote.open)) ? Number(quote.open).toFixed(2) : "—"}</span>
+                <span>最高 {Number.isFinite(Number(quote.high)) ? Number(quote.high).toFixed(2) : "—"}</span>
+                <span>最低 {Number.isFinite(Number(quote.low)) ? Number(quote.low).toFixed(2) : "—"}</span>
+                <span>昨收 {Number.isFinite(Number(quote.pre_close)) ? Number(quote.pre_close).toFixed(2) : "—"}</span>
+                <span>
+                  换手{" "}
+                  {Number.isFinite(Number(quote.turnover_rate))
+                    ? `${(quote.turnover_rate * 100).toFixed(2)}%`
+                    : "—"}
+                </span>
+                <span>来源 {quote.source || "—"}</span>
+              </div>
+            </div>
+          ) : null}
+        </div>
         <p className="rt-foot">数据仅供研究参考，实时性以各数据源为准；市场有风险，决策需谨慎。</p>
       </div>
     </div>

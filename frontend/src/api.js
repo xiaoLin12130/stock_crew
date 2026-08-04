@@ -118,6 +118,16 @@ export async function getRealtimeData() {
   }
 }
 
+// GET /api/data/quote?code=600519 — 个股实时行情
+export async function getStockQuote(code) {
+  try {
+    return await requestJson(`/api/data/quote?code=${encodeURIComponent(String(code).trim())}`);
+  } catch (err) {
+    if (canFallback()) return mockStockQuote(code);
+    throw err;
+  }
+}
+
 // GET /api/reviews（历史分组列表）
 export async function listReviews() {
   try {

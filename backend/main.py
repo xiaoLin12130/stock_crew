@@ -600,6 +600,22 @@ def realtime_snapshot() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"实时数据获取失败：{exc}") from exc
 
 
+@app.get("/api/data/quote")
+def realtime_quote(code: str = "") -> dict[str, Any]:
+    """个股实时行情（东财 push2；代码 6 位数字校验）。"""
+    code = str(code or "").strip()
+    if not re.fullmatch(r"\d{6}", code):
+        raise HTTPException(status_code=400, detail="股票代码应为 6 位数字，如 600519")
+    from stock_review_crew.tools.realtime import RealtimeError, fetch_stock_quote
+
+    try:
+        return fetch_stock_quote(code)
+    except RealtimeError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"个股行情获取失败：{exc}") from exc
+
+
 @app.post("/api/reviews")
 def create_review(payload: Any = Body(...)) -> dict[str, str]:
     if not isinstance(payload, dict):

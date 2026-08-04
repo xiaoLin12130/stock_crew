@@ -89,3 +89,38 @@ def test_realtime_endpoint(monkeypatch):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body == {"status": {"phase": "测试"}, "ok": True}
+
+
+def test_stock_quote(monkeypatch):
+    fake = {
+        "data": {
+            "f43": 3806.79, "f44": 3818.27, "f45": 3799.52, "f46": 3816.37,
+            "f47": 100, "f48": 1e8, "f57": "600519", "f58": "贵州茅台",
+            "f60": 3809.66, "f169": 0.55, "f170": -0.08,
+        }
+    }
+    monkeypatch.setattr(realtime, "_http_json", lambda *a, **k: fake)
+    q = realtime.fetch_stock_quote("600519")
+    assert q["code"] == "600519"
+    assert q["name"] == "贵州茅台"
+    assert q["pct_change"] == pytest.approx(-0.0008)
+    assert q["turnover_rate"] == pytest.approx(0.0055)
+
+
+def test_quote_endpoint(monkeypatch):
+    monkeypatch.setattr(
+        realtime, "fetch_stock_quote",
+        lambda code: {"code": code, "name": "测试股", "price": 10.0, "pct_change": 0.01},
+    )
+    r = client.get("/api/data/quote", params={"code": "600519"})
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "测试股"
+    # 参数校验
+    assert client.get("/api/data/quote", params={"code": "abc"}).status_code == 400
+    assert client.get("/api/data/quote").status_code == 400
+    # 未查到 → 404 中文
+    def _boom(code):
+        raise realtime.RealtimeError("未查询到该股票")
+
+    monkeypatch.setattr(realtime, "fetch_stock_quote", _boom)
+    assert client.get("/api/data/quote", params={"code": "999999"}).status_code == 404

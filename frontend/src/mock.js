@@ -388,6 +388,29 @@ export function buildMockRealtime() {
   };
 }
 
+// 个股实时行情 mock（结构同 GET /api/data/quote）
+export function mockStockQuote(code) {
+  const c = String(code || "600519").trim().padStart(6, "0");
+  const seed = c.split("").reduce((s, x) => s + Number(x), 0);
+  const price = 10 + (seed % 200) + (seed % 97) / 100;
+  const pct = ((seed % 50) - 20) / 1000;
+  return {
+    code: c,
+    name: `示例股${c.slice(-3)}`,
+    price,
+    pct_change: pct,
+    open: price * (1 - 0.004),
+    high: price * (1 + 0.012),
+    low: price * (1 - 0.011),
+    pre_close: price / (1 + pct),
+    volume: 100000 + seed * 137,
+    amount: price * 100000 * 100,
+    turnover_rate: 0.02 + (seed % 30) / 1000,
+    source: "离线mock",
+    units: { pct_change: "小数(0.05=5%)", turnover_rate: "小数" },
+  };
+}
+
 // 历史列表种子（按日期分组、同日多份、倒序）
 export function seedMockReviews(today = new Date()) {
   const map = new Map();
