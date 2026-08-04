@@ -15,8 +15,9 @@ from stock_review_crew.tools import stock_data as sd  # noqa: E402
 
 
 class _Resp:
-    def __init__(self, payload):
+    def __init__(self, payload, text=""):
         self._payload = payload
+        self.text = text
 
     def raise_for_status(self):
         return None
@@ -114,3 +115,72 @@ def test_news_sina_fallback(monkeypatch):
     result = sd.fetch_news_headlines("2026-08-04")
     assert result["realtime"][0]["text"] == "测试快讯"
     assert "新浪7x24" in result["note"]
+
+
+def test_parse_sina_batch():
+    text = (
+        'var hq_str_sh600519="贵州茅台,1350.060,1358.980,1332.980,1350.940,1331.100,'
+        '1332.890,1332.980,2212536,2963886748.000,'
+        '0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,'
+        '2026-08-04,11:30:00,00";\n'
+        'var hq_str_sz300750="宁德时代,392.000,394.400,396.900,397.500,390.100,'
+        '396.880,396.900,1125000,4450000000.000,'
+        '0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,'
+        '2026-08-04,11:30:00,00";'
+    )
+    rows = realtime._parse_sina_batch(text)
+    assert len(rows) == 2
+    assert rows[0]["code"] == "600519"
+    assert rows[0]["name"] == "贵州茅台"
+    assert rows[0]["price"] == pytest.approx(1332.98)
+    assert rows[1]["code"] == "300750"
+
+
+def test_sentiment_realtime(monkeypatch):
+    pool = {"data": {"tc": 2, "pool": [{"c": "600519", "n": "贵州茅台"},
+                                       {"c": "300750", "n": "宁德时代"}]}}
+    sina = (
+        'var hq_str_sh600519="贵州茅台,1350.060,1358.980,1332.980,1350.940,1331.100,'
+        '1332.890,1332.980,2212536,2963886748.000,'
+        '0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,'
+        '2026-08-04,11:30:00,00";\n'
+        'var hq_str_sz300750="宁德时代,392.000,394.400,396.900,397.500,390.100,'
+        '396.880,396.900,1125000,4450000000.000,'
+        '0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,'
+        '2026-08-04,11:30:00,00";'
+    )
+
+    def fake_get(url, **kwargs):
+        if "getTopicZTPool" in url:
+            return _Resp(pool)
+        if "hq.sinajs.cn" in url:
+            return _Resp(sina, text=sina)
+        return _Resp({"ok": True})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(realtime, "_parse_sina_batch", lambda text: [
+        {"code": "600519", "name": "贵州茅台", "price": 1332.98, "pre_close": 1358.98},
+        {"code": "300750", "name": "宁德时代", "price": 396.9, "pre_close": 394.4},
+    ])
+    out = realtime.fetch_sentiment_realtime("2026-08-04")
+    assert out["yesterday_zt_count"] == 2
+    assert out["matched_today"] == 2
+    assert out["avg_return"] == pytest.approx((-0.0191 + 0.0063) / 2, abs=1e-3)
+    assert out["red_rate"] == pytest.approx(0.5)
+    assert out["lianban_count"] == 0
+    assert out["source"] == "东财昨日池+新浪实时"
+
+
+def test_breadth_realtime(monkeypatch):
+    diff = [
+        {"f12": "600519", "f14": "贵州茅台", "f3": 1.2},
+        {"f12": "300750", "f14": "宁德时代", "f3": -0.5},
+        {"f12": "830799", "f14": "北证股", "f3": 2.0},   # 北证过滤
+        {"f12": "600001", "f14": "ST测试", "f3": 3.0},   # ST 过滤
+        {"f12": "000001", "f14": "平安银行", "f3": 0.0},
+    ]
+    monkeypatch.setattr(realtime, "_http_json", lambda *a, **k: {"data": {"diff": diff}})
+    b = realtime.fetch_breadth_realtime()
+    assert b["total"] == 3
+    assert b["up"] == 1 and b["down"] == 1 and b["flat"] == 1
+    assert b["up_down_ratio"] == pytest.approx(1.0)

@@ -685,7 +685,7 @@ def _compute_index_metrics(records: list[dict], date: str, days: int) -> Optiona
     }
 
 
-def fetch_index_trend(date: str, days: int = 60, tdx_path: Optional[str] = None) -> dict:
+def _fetch_index_trend_impl(date: str, days: int = 60, tdx_path: Optional[str] = None) -> dict:
     """指数日线/均线：通达信 akshare → 通达信本地 → 本地缓存 → 数据缺失。"""
     fmt = _d(date)
     errors: list[str] = []
@@ -791,6 +791,43 @@ def fetch_index_trend(date: str, days: int = 60, tdx_path: Optional[str] = None)
             "source": "数据缺失", "degraded": True,
             "degraded_reason": errors or ["各数据源均不可用"],
             "note": "指数日线数据缺失（在线源失败且无本地缓存）"}
+
+
+def fetch_index_trend(date: str, days: int = 60, tdx_path: Optional[str] = None) -> dict:
+    """指数日线/均线 + 盘中实时合并（R6-1）：当日指数点位/涨跌幅始终有值。"""
+    out = _fetch_index_trend_impl(date, days, tdx_path)
+    if out is None or out.get("source") == "数据缺失":
+        return out
+    if date != _now().strftime("%Y-%m-%d"):
+        return out
+    try:
+        from .realtime import fetch_indices
+
+        rt = fetch_indices().get("indices") or []
+        name_map = {"上证指数": "shanghai", "深证成指": "shenzhen",
+                    "创业板指": "chuangye", "科创50": "kechuang"}
+        for item in rt:
+            key = name_map.get(item.get("name"))
+            d = (out.get("indices") or {}).get(key)
+            if not key or not d or not isinstance(d, dict):
+                continue
+            if item.get("price") is not None:
+                d["close"] = item["price"]
+            if item.get("open") is not None:
+                d["open"] = item["open"]
+            if item.get("high") is not None:
+                d["high"] = item["high"]
+            if item.get("low") is not None:
+                d["low"] = item["low"]
+            if item.get("pct_change") is not None:
+                d["pct_change"] = item["pct_change"]
+            d["realtime_source"] = item.get("source")
+        note = (out.get("note") or "") or ""
+        note = note.replace("非交易日，取最近交易日", "日线截至最近交易日（当日为交易日）")
+        out["note"] = note + "；当日点位为盘中实时（R6-1）"
+    except Exception:  # noqa: BLE001 - 实时合并失败不影响历史数据
+        pass
+    return out
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1067,7 +1104,7 @@ def _breadth_from_legu() -> dict:
 
 
 def fetch_market_breadth(date: str) -> dict:
-    """涨跌家数/炸板率：Tushare 计算 → 东财（乐咕）→ 本地缓存 → 数据缺失。"""
+    """涨跌家数/炸板率：Tushare 计算 → 盘中实时（东财全A统计）→ 东财（乐咕）→ 缓存 → 缺失。"""
     errors: list[str] = []
     try:
         block = _breadth_from_tushare(date)
@@ -1075,6 +1112,20 @@ def fetch_market_breadth(date: str) -> dict:
         return block
     except Exception as exc:
         errors.append(f"Tushare计算: {exc}")
+    try:
+        from .realtime import fetch_breadth_realtime
+
+        block = dict(fetch_breadth_realtime())
+        block["limit_up"] = None
+        block["limit_down"] = None
+        block["zhaban"] = None
+        block["touched"] = None
+        block["zhaban_rate"] = None
+        block["distribution"] = {}
+        _cache_save(date, "breadth", block)
+        return block
+    except Exception as exc:
+        errors.append(f"盘中实时: {exc}")
     try:
         return _breadth_from_legu()
     except Exception as exc:
@@ -2044,8 +2095,18 @@ def _sentiment_from_ths(date: str) -> dict:
     }
 
 
+def _sentiment_from_realtime(date: str) -> dict:
+    """盘中「昨日涨停今日表现」明细（R6-2）：东财昨日池 + 新浪批量实时。"""
+    from .realtime import RealtimeError, fetch_sentiment_realtime
+
+    try:
+        return fetch_sentiment_realtime(date)
+    except RealtimeError as exc:
+        raise DataSourceError(f"盘中实时: {exc}") from exc
+
+
 def fetch_sentiment(date: str, tdx_path: Optional[str] = None) -> dict:
-    """情绪指标：Tushare 计算 → 东财 → 同花顺统计 → 通达信本地 → 本地缓存 → 数据缺失。"""
+    """情绪指标：Tushare（收盘后）→ 盘中实时（东财昨日池+新浪）→ 东财 → 同花顺统计 → 通达信本地 → 缓存。"""
     errors: list[str] = []
     try:
         block = _sentiment_from_tushare(date)
@@ -2053,6 +2114,12 @@ def fetch_sentiment(date: str, tdx_path: Optional[str] = None) -> dict:
         return block
     except Exception as exc:
         errors.append(f"Tushare计算: {exc}")
+    try:
+        block = _sentiment_from_realtime(date)
+        _cache_save(date, "sentiment", block)
+        return block
+    except Exception as exc:
+        errors.append(f"盘中实时: {exc}")
     try:
         block = _sentiment_from_em(date)
         _cache_save(date, "sentiment", block)

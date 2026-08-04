@@ -381,6 +381,128 @@ def search_stocks(query: str) -> list[dict[str, Any]]:
     raise RealtimeError(f"未找到与「{q}」匹配的股票")
 
 
+def _parse_sina_batch(text: str) -> list[dict[str, Any]]:
+    """解析新浪批量行情（hq.sinajs.cn）：name,open,pre_close,price,high,low,...,volume,amount,时间。"""
+    out = []
+    for m in re.finditer(r'hq_str_([a-z]{2}\d{6})="([^"]*)"', text):
+        sym, fields = m.group(1), m.group(2)
+        f = fields.split(",")
+        if len(f) < 32:
+            continue
+        out.append({
+            "code": sym[2:],
+            "name": f[0],
+            "open": _to_float(f[1]), "pre_close": _to_float(f[2]),
+            "price": _to_float(f[3]), "high": _to_float(f[4]), "low": _to_float(f[5]),
+            "volume": _to_float(f[8]), "amount": _to_float(f[9]),
+        })
+    return out
+
+
+def fetch_sentiment_realtime(date: Optional[str] = None) -> dict[str, Any]:
+    """盘中「昨日涨停今日表现」明细：东财昨日涨停池 + 新浪批量实时报价。
+    口径：昨收为基准；连板率=今日再涨停÷昨日涨停；核按钮率=今日跌停÷昨日涨停；
+    主板10%/创业科创20%；过滤 ST/北证。"""
+    today = date or datetime.now().strftime("%Y-%m-%d")
+    prev = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    resp = requests.get(
+        "http://push2ex.eastmoney.com/getTopicZTPool",
+        params={"ut": "7eea3edcaed734bea9cbfc24409ed989", "dpt": "wz.ztzt",
+                "Pageindex": 0, "pagesize": 600, "sort": "fbt:asc",
+                "date": prev.replace("-", "")},
+        headers={"User-Agent": _UA},
+        timeout=_TIMEOUT,
+    )
+    resp.raise_for_status()
+    pool = ((resp.json().get("data") or {}).get("pool")) or []
+    if not pool:
+        raise RealtimeError("东财昨日涨停池无数据（可能非交易日或超出保留期）")
+    codes = [str(x.get("c") or "").zfill(6) for x in pool]
+    codes = [c for c in codes if c and not c.startswith(("4", "8", "92"))]
+    symbols = ",".join(("sh" if c.startswith(("6", "9")) else "sz") + c for c in codes)
+    r = requests.get(
+        "http://hq.sinajs.cn/list=" + symbols,
+        headers={"User-Agent": _UA, "Referer": "https://finance.sina.com.cn/"},
+        timeout=_TIMEOUT,
+    )
+    r.raise_for_status()
+    quotes = _parse_sina_batch(r.text)
+    if not quotes:
+        raise RealtimeError("新浪批量行情无数据")
+    rows = []
+    for q in quotes:
+        price, pre = q.get("price"), q.get("pre_close")
+        if price is None or pre is None or pre <= 0:
+            continue
+        q["pct_change"] = round((price - pre) / pre, 6)
+        rows.append(q)
+    if not rows:
+        raise RealtimeError("批量行情解析为空")
+    n = len(rows)
+    pcts = [x["pct_change"] for x in rows]
+    is_ge = lambda c: c.startswith(("30", "68"))  # noqa: E731
+    limit_cnt = sum(1 for x in rows
+                    if x["pct_change"] >= (0.199 if is_ge(x["code"]) else 0.099))
+    down_limit = sum(1 for x in rows
+                     if x["pct_change"] <= (-0.199 if is_ge(x["code"]) else -0.099))
+    best = sorted(rows, key=lambda x: x["pct_change"], reverse=True)[:3]
+    worst = sorted(rows, key=lambda x: x["pct_change"])[:3]
+    return {
+        "yesterday": prev, "today": today,
+        "yesterday_zt_count": len(codes), "matched_today": n,
+        "avg_return": round(sum(pcts) / n, 6),
+        "median_return": None,
+        "red_rate": round(sum(1 for p in pcts if p > 0) / n, 6),
+        "lianban_count": limit_cnt, "lianban_rate": round(limit_cnt / n, 6),
+        "hean_count": down_limit, "hean_rate": round(down_limit / n, 6),
+        "best3": [{"code": x["code"], "name": x["name"], "pct_change": x["pct_change"]} for x in best],
+        "worst3": [{"code": x["code"], "name": x["name"], "pct_change": x["pct_change"]} for x in worst],
+        "zhaban": None, "touched": None, "zhaban_rate": None,
+        "source": "东财昨日池+新浪实时",
+        "degraded": True,
+        "degraded_reason": ["Tushare 为收盘后口径，盘中使用实时计算"],
+        "note": "盘中实时口径（昨收为基准；仅覆盖昨日涨停池）",
+    }
+
+
+def fetch_breadth_realtime() -> dict[str, Any]:
+    """全市场涨跌家数（盘中实时）：东财 clist 全 A 统计，过滤 ST/北证。"""
+    data = _http_json(
+        f"{_EM}/clist/get",
+        {"pn": 1, "pz": 7000, "po": 1, "np": 1, "fltt": 2, "invt": 2,
+         "fid": "f3", "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
+         "fields": "f3,f12,f14"},
+    )
+    diff = (data.get("data") or {}).get("diff") or []
+    up = down = flat = 0
+    total = 0
+    for r in diff:
+        code = str(r.get("f12") or "")
+        name = str(r.get("f14") or "")
+        if code.startswith(("4", "8", "92")) or "ST" in name.upper() or "退" in name:
+            continue
+        pct = _to_float(r.get("f3"))
+        if pct is None:
+            continue
+        total += 1
+        if pct > 0:
+            up += 1
+        elif pct < 0:
+            down += 1
+        else:
+            flat += 1
+    if not total:
+        raise RealtimeError("东财全市场实时统计无数据")
+    return {
+        "total": total, "up": up, "down": down, "flat": flat,
+        "up_down_ratio": round(up / down, 4) if down else None,
+        "source": "东财实时",
+        "degraded": False,
+        "degraded_reason": [],
+        "note": "盘中实时全市场统计（过滤 ST/北证）",
+    }
+
+
 def fetch_zt_stats(date: Optional[str] = None) -> dict[str, Any]:
     """涨跌停/炸板/封板率实时统计（同花顺 dataapi，盘中即更新）。"""
     from .ths_crawler import ThsError, build_zt_block
