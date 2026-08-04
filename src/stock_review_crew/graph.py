@@ -251,15 +251,37 @@ def _dict_to_md(value, indent=0):
     elif isinstance(value, list):
         if not value:
             lines.append(f"{prefix}（空列表）")
-        for item in value[:10]:
-            if isinstance(item, dict):
-                fields = "，".join(
-                    f"{k}={_fmt_value(v)}" for k, v in item.items()
-                    if k not in ("raw",) and not isinstance(v, (dict, list))
+        elif all(isinstance(x, dict) and ("time" in x or "datetime" in x or "分钟" in x)
+                 for x in value[:3]):
+            # 分时/分钟线：给 LLM 完整摘要（首尾+极值+采样），禁止只截前 10 根
+            n = len(value)
+            def _bar(b):
+                return "，".join(
+                    f"{k}={_fmt_value(v)}" for k, v in b.items()
+                    if k != "raw" and not isinstance(v, (dict, list))
                 )
-                lines.append(f"{prefix}- {fields or '（对象）'}")
-            else:
-                lines.extend(_dict_to_md(item, indent + 1))
+            lines.append(f"{prefix}- 共 {n} 根（完整）")
+            lines.append(f"{prefix}- 首根: {_bar(value[0])}")
+            lines.append(f"{prefix}- 当前: {_bar(value[-1])}")
+            highs = [x.get("high") or x.get("close") for x in value
+                     if (x.get("high") or x.get("close")) is not None]
+            lows = [x.get("low") or x.get("close") for x in value
+                    if (x.get("low") or x.get("close")) is not None]
+            if highs:
+                lines.append(f"{prefix}- 最高: {max(highs)}，最低: {min(lows)}")
+            step = max(1, n // 40)
+            for item in value[::step][:40]:
+                lines.append(f"{prefix}- {_bar(item)}")
+        else:
+            for item in value[:10]:
+                if isinstance(item, dict):
+                    fields = "，".join(
+                        f"{k}={_fmt_value(v)}" for k, v in item.items()
+                        if k not in ("raw",) and not isinstance(v, (dict, list))
+                    )
+                    lines.append(f"{prefix}- {fields or '（对象）'}")
+                else:
+                    lines.extend(_dict_to_md(item, indent + 1))
     else:
         lines.append(f"{prefix}{_fmt_value(value)}")
     return lines

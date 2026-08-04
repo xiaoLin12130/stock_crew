@@ -2447,6 +2447,7 @@ def fetch_intraday_am(date: str, tdx_path: Optional[str] = None) -> dict:
     """上午盘中：上午分时（截至当前）+ 板块 + 涨停/炸板 + 情绪。"""
     _d(date)
     return _mode_result(date, "intraday_am", {
+        "index_trend": fetch_index_trend(date, tdx_path=tdx_path),
         "minute": fetch_minute_data("sh000001", date, period=1,
                                     end_time=_mode_end_time("intraday_am"), tdx_path=tdx_path),
         "sectors": fetch_sectors(date),
@@ -2460,6 +2461,7 @@ def fetch_noon(date: str, tdx_path: Optional[str] = None) -> dict:
     """午间复盘：上午分时全量 + 板块 + 涨停/炸板 + 情绪。"""
     _d(date)
     return _mode_result(date, "noon", {
+        "index_trend": fetch_index_trend(date, tdx_path=tdx_path),
         "minute": fetch_minute_data("sh000001", date, period=1, end_time="11:30",
                                     tdx_path=tdx_path),
         "sectors": fetch_sectors(date),
@@ -2473,6 +2475,7 @@ def fetch_intraday_pm(date: str, tdx_path: Optional[str] = None) -> dict:
     """下午盘中：全天分时（截至当前）+ 板块资金 + 涨停梯队/炸板 + 情绪。"""
     _d(date)
     return _mode_result(date, "intraday_pm", {
+        "index_trend": fetch_index_trend(date, tdx_path=tdx_path),
         "minute": fetch_minute_data("sh000001", date, period=1,
                                     end_time=_mode_end_time("intraday_pm"), tdx_path=tdx_path),
         "sectors": fetch_sectors(date),

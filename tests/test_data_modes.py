@@ -171,9 +171,9 @@ def _mock_all_fail(monkeypatch):
 EXPECTED_BLOCKS = {
     "pre_market": {"index_trend", "macro", "news"},
     "auction": {"auction"},
-    "intraday_am": {"minute", "sectors", "zt_pool", "breadth", "sentiment"},
-    "noon": {"minute", "sectors", "zt_pool", "breadth", "sentiment"},
-    "intraday_pm": {"minute", "sectors", "zt_pool", "breadth", "sentiment"},
+    "intraday_am": {"index_trend", "minute", "sectors", "zt_pool", "breadth", "sentiment"},
+    "noon": {"index_trend", "minute", "sectors", "zt_pool", "breadth", "sentiment"},
+    "intraday_pm": {"index_trend", "minute", "sectors", "zt_pool", "breadth", "sentiment"},
     "close": {"index_trend", "minute", "zt_pool", "sectors", "breadth", "sentiment", "lhb", "news"},
 }
 
