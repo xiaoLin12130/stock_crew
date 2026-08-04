@@ -537,6 +537,10 @@ def _run_review_job(job_id: str, date: str, mode: str, max_rounds: int) -> None:
         with _ENGINE_LOCK:
             compiled = graph.build_graph(progress_callback=_progress_cb(job_id))
             state = compiled.invoke(initial)
+        if state.get("data_ok") is False:
+            raise graph.DataValidationError(
+                str(state.get("data_error") or "取数校验失败：核心数据缺失")
+            )
         report_dict = graph.build_result(state)
 
         now = datetime.now()
@@ -573,6 +577,9 @@ def _run_review_job(job_id: str, date: str, mode: str, max_rounds: int) -> None:
             },
             _finished=time.monotonic(),
         )
+    except graph.DataValidationError as exc:
+        text = str(exc)
+        _update(job_id, status="error", message=text, error=text, _finished=time.monotonic())
     except Exception as exc:  # noqa: BLE001 - 任何异常都转为中文 error，绝不 500 崩线程
         logger.exception("复盘任务异常：job=%s", job_id)
         text = f"复盘失败：{exc}"

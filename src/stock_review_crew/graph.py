@@ -19,6 +19,10 @@ from datetime import datetime
 
 from langgraph.graph import END, StateGraph
 
+
+class DataValidationError(RuntimeError):
+    """取数校验失败：核心数据缺失，复盘终止（中文消息）。"""
+
 from . import prompts
 from .prompts import DEFAULT_MODE, DISCLAIMER, MODE_INFO
 from .skills import list_skills
@@ -388,6 +392,44 @@ def fetch_data_node(state):
         "degraded": bool(notes) or bool(state.get("degraded")),
         "degraded_notes": notes,
     }
+
+
+# 各模式核心数据块：缺失（source=数据缺失）即无复盘必要（R7 取数校验）
+CRITICAL_BLOCKS = {
+    "pre_market": ("index_trend",),
+    "auction": ("auction",),
+    "intraday_am": ("index_trend", "minute"),
+    "noon": ("index_trend", "minute"),
+    "intraday_pm": ("index_trend", "minute"),
+    "close": ("index_trend", "minute"),
+}
+
+
+def _block_usable(blk) -> bool:
+    if blk is None:
+        return False
+    if isinstance(blk, dict) and blk.get("source") in ("数据缺失", "数据缺失/估算"):
+        return False
+    return True
+
+
+def validate_data_node(state):
+    mode = state.get("mode") or "close"
+    snapshot = state.get("snapshot") or {}
+    blocks = snapshot.get("data") if isinstance(snapshot, dict) else None
+    if not isinstance(blocks, dict) or not blocks:
+        return {}
+    missing = [name for name in CRITICAL_BLOCKS.get(mode, ())
+               if name in blocks and not _block_usable(blocks.get(name))]
+    if missing:
+        names = "、".join(missing)
+        raise DataValidationError(
+            "取数校验失败：" + names + "数据缺失（全部数据源不可用），本次复盘终止。请检查网络/代理/数据源后重试。"
+        )
+    return {}
+
+def _data_router(state):
+    return END if state.get("data_ok") is False else "news_analyst"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1132,6 +1174,8 @@ def default_initial_state(date, mode=DEFAULT_MODE, max_rounds=3,
         "disclaimer": DISCLAIMER,
         "degraded": False,
         "degraded_notes": [],
+        "data_ok": True,
+        "data_error": "",
     }
 
 
@@ -1142,6 +1186,7 @@ def build_graph(progress_callback=None):
     graph = StateGraph(ReviewState)
 
     graph.add_node("fetch_data", fetch_data_node)
+    graph.add_node("validate_data", validate_data_node)
     graph.add_node("news_analyst", news_analyst_node)
     graph.add_node("trend_analysts", trend_analysts_node)
     graph.add_node("sentiment_analysts", sentiment_analysts_node)
@@ -1150,7 +1195,11 @@ def build_graph(progress_callback=None):
     graph.add_node("report", report_node)
 
     graph.set_entry_point("fetch_data")
-    graph.add_edge("fetch_data", "news_analyst")
+    graph.add_edge("fetch_data", "validate_data")
+    graph.add_conditional_edges("validate_data", _data_router, {
+        "news_analyst": "news_analyst",
+        END: END,
+    })
     graph.add_edge("news_analyst", "trend_analysts")
     graph.add_edge("trend_analysts", "sentiment_analysts")
     graph.add_edge("sentiment_analysts", "host")
