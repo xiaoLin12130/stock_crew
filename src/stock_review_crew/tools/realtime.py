@@ -467,40 +467,84 @@ def fetch_sentiment_realtime(date: Optional[str] = None) -> dict[str, Any]:
 
 def fetch_breadth_realtime() -> dict[str, Any]:
     """全市场涨跌家数（盘中实时）：东财 clist 全 A 统计，过滤 ST/北证。"""
-    data = _http_json(
-        f"{_EM}/clist/get",
-        {"pn": 1, "pz": 7000, "po": 1, "np": 1, "fltt": 2, "invt": 2,
-         "fid": "f3", "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
-         "fields": "f3,f12,f14"},
-    )
-    diff = (data.get("data") or {}).get("diff") or []
-    up = down = flat = 0
-    total = 0
-    for r in diff:
-        code = str(r.get("f12") or "")
-        name = str(r.get("f14") or "")
-        if code.startswith(("4", "8", "92")) or "ST" in name.upper() or "退" in name:
-            continue
-        pct = _to_float(r.get("f3"))
-        if pct is None:
-            continue
-        total += 1
-        if pct > 0:
-            up += 1
-        elif pct < 0:
-            down += 1
-        else:
-            flat += 1
-    if not total:
-        raise RealtimeError("东财全市场实时统计无数据")
-    return {
-        "total": total, "up": up, "down": down, "flat": flat,
-        "up_down_ratio": round(up / down, 4) if down else None,
-        "source": "东财实时",
-        "degraded": False,
-        "degraded_reason": [],
-        "note": "盘中实时全市场统计（过滤 ST/北证）",
-    }
+    em_err: Optional[Exception] = None
+    try:
+        data = _http_json(
+            f"{_EM}/clist/get",
+            {"pn": 1, "pz": 7000, "po": 1, "np": 1, "fltt": 2, "invt": 2,
+             "fid": "f3", "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
+             "fields": "f3,f12,f14"},
+        )
+        diff = (data.get("data") or {}).get("diff") or []
+        up = down = flat = 0
+        total = 0
+        for r in diff:
+            code = str(r.get("f12") or "")
+            name = str(r.get("f14") or "")
+            if code.startswith(("4", "8", "92")) or "ST" in name.upper() or "退" in name:
+                continue
+            pct = _to_float(r.get("f3"))
+            if pct is None:
+                continue
+            total += 1
+            if pct > 0:
+                up += 1
+            elif pct < 0:
+                down += 1
+            else:
+                flat += 1
+        if total:
+            return {
+                "total": total, "up": up, "down": down, "flat": flat,
+                "up_down_ratio": round(up / down, 4) if down else None,
+                "source": "东财实时",
+                "degraded": False,
+                "degraded_reason": [],
+                "note": "盘中实时全市场统计（过滤 ST/北证）",
+            }
+    except Exception as exc:  # noqa: BLE001
+        em_err = exc
+    # 备用：新浪全市场（akshare stock_zh_a_spot，实测 ~20s/5500 只）
+    try:
+        import akshare as ak
+
+        df = ak.stock_zh_a_spot()
+        if df is None or df.empty:
+            raise RealtimeError("新浪全市场行情为空")
+        col_pct = "\u6da8\u8dcc\u5e45"       # 涨跌幅
+        col_code = "\u4ee3\u7801"             # 代码
+        col_name = "\u540d\u79f0"             # 名称
+        up = down = flat = 0
+        total = 0
+        for _, r in df.iterrows():
+            code = str(r.get(col_code) or "")
+            name = str(r.get(col_name) or "")
+            if code.startswith(("4", "8", "92")) or "ST" in name.upper() or "\u9000" in name:
+                continue
+            pct = _to_float(r.get(col_pct))
+            if pct is None:
+                continue
+            total += 1
+            if pct > 0:
+                up += 1
+            elif pct < 0:
+                down += 1
+            else:
+                flat += 1
+        if not total:
+            raise RealtimeError("新浪全市场统计为空")
+        return {
+            "total": total, "up": up, "down": down, "flat": flat,
+            "up_down_ratio": round(up / down, 4) if down else None,
+            "source": "新浪实时",
+            "degraded": True,
+            "degraded_reason": [f"东财 clist 不可用（{em_err}），降级新浪全市场行情"],
+            "note": "新浪全市场统计（过滤 ST/北证）",
+        }
+    except RealtimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise RealtimeError(f"全市场涨跌家数失败：东财({em_err})；新浪({exc})") from exc
 
 
 def fetch_zt_stats(date: Optional[str] = None) -> dict[str, Any]:
