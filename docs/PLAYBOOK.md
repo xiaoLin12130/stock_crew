@@ -91,3 +91,14 @@
 - 现象：`$env:DEEPSEEK_API_KEY=''` 后配置层仍读到 .env 的真实 Key（测试走真实 LLM）。
 - 原因：PowerShell 空串赋值 = 删除该环境变量，而非置空。
 - 解决：在 Python 内 `os.environ['DEEPSEEK_API_KEY']=''` 或用 `Remove-Item Env:`。
+
+### [2026-08-04] 同花顺页面 JS 签名（v Cookie）与浏览器爬虫
+- 现象：q.10jqka.com.cn 行业板块页无签名请求返回 401；akshare 依赖 py_mini_racer
+  执行 ths.js（Windows IOCP 退出死锁，已禁用）。
+- 解决（**浏览器解析 HTML 方案**）：Playwright（.venv 已装）驱动系统 Edge 无头，
+  打开页面让 JS 自动生成 v Cookie；再**页面内 fetch**（同源 + `X-Requested-With:
+  XMLHttpRequest` 头）取 ajax HTML 表格（独立 ctx.request 会 403，必须页面内 fetch）。
+  实现：`src/stock_review_crew/tools/browser_crawler.py`，已接入板块降级链
+  （同花顺 → 同花顺(浏览器) → 东财 → 缓存）。
+- 备注：playwright 仅装在 .venv（系统 Python 未装，模块内 available() 判定降级）；
+  浏览器启动约 2-4s，仅作备用源；沙箱内运行需提权。

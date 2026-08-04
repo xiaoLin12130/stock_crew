@@ -1023,6 +1023,33 @@ def _sectors_from_ths_today() -> dict:
     }
 
 
+def _sectors_from_browser_today() -> dict:
+    """同花顺(浏览器)备用：Playwright 无头浏览器解析 HTML（页面 JS 签名自动执行）。"""
+    try:
+        from .browser_crawler import BrowserCrawlError, fetch_ths_sector_rows
+
+        rows = _call_with_timeout(fetch_ths_sector_rows)
+    except Exception as exc:
+        raise DataSourceError(f"同花顺(浏览器): {exc}") from exc
+    if not rows:
+        raise DataSourceError("同花顺(浏览器)板块无数据")
+    with_pct = [r for r in rows if r.get("涨跌幅") is not None]
+    top = sorted(with_pct, key=lambda x: x["涨跌幅"], reverse=True)[:5]
+    bottom = sorted(with_pct, key=lambda x: x["涨跌幅"])[:5]
+    with_flow = [r for r in rows if r.get("净流入") is not None]
+    flow_bottom = sorted(with_flow, key=lambda x: x["净流入"])[:5]
+    return {
+        "top5": [_sector_row(r) for r in top],
+        "bottom5": [_sector_row(r) for r in bottom],
+        "bottom5_flow": [_sector_row(r) for r in flow_bottom],
+        "units": _SECTOR_UNITS,
+        "source": "同花顺(浏览器)",
+        "degraded": False,
+        "degraded_reason": [],
+        "note": "Playwright 无头浏览器解析 HTML（页面 JS 签名自动执行，无需 Cookie）",
+    }
+
+
 def _sectors_from_em_today() -> dict:
     df = _call_with_timeout(_em_sector_names)
     if df is None or df.empty:
@@ -1108,6 +1135,12 @@ def fetch_sectors(date: str) -> dict:
             return block
         except Exception as exc:
             errors.append(f"同花顺: {exc}")
+        try:
+            block = _sectors_from_browser_today()
+            _cache_save(date, "sectors", block)
+            return block
+        except Exception as exc:
+            errors.append(f"同花顺(浏览器): {exc}")
         try:
             block = _sectors_from_em_today()
             _cache_save(date, "sectors", block)

@@ -161,7 +161,7 @@ def _mock_all_fail(monkeypatch):
                  "_legu_activity", "_http_get_json", "_em_zt_pool_previous", "_em_spot",
                  "_em_pre_min", "_em_stock_daily", "_em_sector_names", "_ths_sector_names",
                  "_em_sector_hist", "_ths_sector_hist", "_zt_pool_from_ths",
-                 "_sentiment_from_ths"):
+                 "_sentiment_from_ths", "_sectors_from_browser_today"):
         monkeypatch.setattr(sd, name, _raise, raising=False)
     monkeypatch.setattr(sd, "get_cache_dir", lambda: Path(__file__).parent / "no_such_cache")
 
