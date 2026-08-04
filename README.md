@@ -14,19 +14,23 @@
 
 ## 快速开始
 
-```powershell
-# 1. 环境（.venv 已含全部依赖；uv sync 需网络，走代理）
-$env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890'
-$env:TEMP='H:\stock_review_crew\.tmp'; $env:TMP='H:\stock_review_crew\.tmp'
-$env:UV_CACHE_DIR='H:\stock_review_crew\.tmp\uv-cache'
-uv sync
+### 一键启动（推荐）
 
-# 2. 启动后端（静态托管前端 dist；端口 8501 被 synalysis 占用时用 8502）
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8501
-
-# 3. 打开 http://127.0.0.1:8501
+```text
+双击项目根目录：
+  「启动服务.bat」  → 本地服务：自动启动后端并打开 http://127.0.0.1:8502
+  「启动隧道.bat」  → 本地服务 + Cloudflare 公网隧道（打印公网地址）
 ```
 
+### 命令行启动
+
+```powershell
+# 启动后端（.venv；数据源走本机代理 127.0.0.1:7890）
+$env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890'
+H:\stock_review_crew\.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8502
+```
+
+打开 http://127.0.0.1:8502（8502 为默认端口；8501 常被 synalysis 占用）。
 开发前端：`cd frontend; npm run dev`（无后端时自动降级 mock）。
 
 ## 测试与冒烟
