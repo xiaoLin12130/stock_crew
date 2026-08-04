@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import * as api from "../api";
 import { ANALYSTS } from "../mock";
 import { DEFAULT_MODE, MODES, modeLabel, todayStr, windowHints } from "../modes";
 import { fmtDate, fmtTimeHM } from "../format";
@@ -21,6 +22,43 @@ export default function HomeView({
   const [target, setTarget] = useState("");
   const [selectedAnalysts, setSelectedAnalysts] = useState([]);
   const [chatError, setChatError] = useState("");
+
+  // ── 实时数据板块 ──
+  const [rtData, setRtData] = useState(null);
+  const [rtLoading, setRtLoading] = useState(false);
+  const [rtError, setRtError] = useState("");
+  const [rtAuto, setRtAuto] = useState(false);
+  const rtTimer = useRef(null);
+
+  const loadRealtime = useCallback(async () => {
+    setRtLoading(true);
+    setRtError("");
+    try {
+      const d = await api.getRealtimeData();
+      setRtData(d);
+    } catch (err) {
+      setRtError((err && err.message) || "实时数据加载失败");
+    } finally {
+      setRtLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadRealtime();
+    return () => {
+      if (rtTimer.current) clearInterval(rtTimer.current);
+    };
+  }, [loadRealtime]);
+
+  useEffect(() => {
+    if (rtTimer.current) clearInterval(rtTimer.current);
+    if (rtAuto) {
+      rtTimer.current = setInterval(loadRealtime, 30000);
+    }
+    return () => {
+      if (rtTimer.current) clearInterval(rtTimer.current);
+    };
+  }, [rtAuto, loadRealtime]);
 
   const hints = useMemo(() => windowHints(mode, date), [mode, date]);
 
@@ -263,6 +301,158 @@ export default function HomeView({
             </div>
           )}
         </div>
+      </div>
+
+      {/* 实时数据板块 */}
+      <div className="card realtime-card">
+        <div className="realtime-head">
+          <div>
+            <h3 className="card-title">实时数据</h3>
+            <p className="card-sub">
+              {rtData && rtData.status
+                ? `${rtData.status.phase} · 更新于 ${rtData.status.time}`
+                : "盘中实时行情（东财/同花顺/新浪）"}
+              {rtData && rtData.sources && rtData.sources.length
+                ? ` · 来源：${rtData.sources.join(" / ")}`
+                : ""}
+            </p>
+          </div>
+          <div className="realtime-actions">
+            <label className="rt-auto">
+              <input type="checkbox" checked={rtAuto} onChange={(e) => setRtAuto(e.target.checked)} />
+              30 秒自动刷新
+            </label>
+            <button className="btn btn-outline btn-sm" onClick={loadRealtime} disabled={rtLoading}>
+              {rtLoading ? "刷新中…" : "刷新"}
+            </button>
+          </div>
+        </div>
+
+        {rtError ? <div className="upload-error">{rtError}</div> : null}
+        {rtData && rtData.degraded && rtData.degraded.length ? (
+          <div className="degraded-banner" style={{ marginBottom: 12 }}>
+            部分数据降级：{rtData.degraded.join("；")}
+          </div>
+        ) : null}
+
+        {!rtData && !rtError ? (
+          <div className="loading-card">
+            <div className="spinner" />
+            <div style={{ marginTop: 10 }}>正在加载实时数据…</div>
+          </div>
+        ) : null}
+
+        {rtData && rtData.indices ? (
+          <div className="kpi-grid">
+            {rtData.indices.indices.map((ix) => {
+              const pct = Number(ix.pct_change);
+              const cls = !Number.isFinite(pct) ? "zero" : pct > 0 ? "pos" : pct < 0 ? "neg" : "zero";
+              return (
+                <div key={ix.name} className="kpi">
+                  <div className="kpi-label">{ix.name}</div>
+                  <div className="kpi-value">
+                    {Number.isFinite(Number(ix.price)) ? Number(ix.price).toFixed(2) : "—"}
+                  </div>
+                  <div className={`kpi-sub ${cls}`}>
+                    {Number.isFinite(pct) ? `${pct >= 0 ? "+" : ""}${(pct * 100).toFixed(2)}%` : "—"}
+                    {ix.source ? ` · ${ix.source}` : ""}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+
+        {rtData && rtData.zt ? (
+          <div className="rt-zt">
+            <span className="tag-chip light">
+              涨停 <b className="pos">{rtData.zt.limit_up_count ?? "—"}</b>
+            </span>
+            <span className="tag-chip light">
+              跌停 <b className="neg">{rtData.zt.limit_down_count ?? "—"}</b>
+            </span>
+            <span className="tag-chip light">
+              炸板率{" "}
+              <b className="zero">
+                {rtData.zt.zhaban_rate != null ? `${(rtData.zt.zhaban_rate * 100).toFixed(1)}%` : "—"}
+              </b>
+            </span>
+            <span className="tag-chip light">
+              封板率{" "}
+              <b className="zero">
+                {rtData.zt.seal_rate != null ? `${(rtData.zt.seal_rate * 100).toFixed(1)}%` : "—"}
+              </b>
+            </span>
+            <span className="tag-chip light">
+              昨日涨停 <b>{rtData.zt.yesterday_zt_count ?? "—"}</b>
+            </span>
+            {rtData.zt.tier && Object.keys(rtData.zt.tier).length ? (
+              <span className="tag-chip light">
+                梯队{" "}
+                <b>
+                  {Object.entries(rtData.zt.tier)
+                    .map(([k, v]) => `${k} ${v}`)
+                    .join(" / ")}
+                </b>
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+
+        {rtData && rtData.sectors ? (
+          <div className="rt-grid">
+            <div className="rt-col">
+              <div className="rt-col-title">板块涨幅 Top5</div>
+              {rtData.sectors.top.map((s) => {
+                const pct = Number(s.pct_change);
+                const cls = pct > 0 ? "pos" : pct < 0 ? "neg" : "zero";
+                return (
+                  <div key={s.name} className="rt-row">
+                    <span className="rt-name">{s.name}</span>
+                    <span className={cls}>
+                      {Number.isFinite(pct) ? `${pct >= 0 ? "+" : ""}${(pct * 100).toFixed(2)}%` : "—"}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="rt-col">
+              <div className="rt-col-title">主力净流入 Top5（亿）</div>
+              {(rtData.sectors.flow_in || []).map((s) => (
+                <div key={s.name} className="rt-row">
+                  <span className="rt-name">{s.name}</span>
+                  <span className="pos">
+                    {Number.isFinite(Number(s.net_inflow)) ? `${(Number(s.net_inflow) / 1e8).toFixed(1)} 亿` : "—"}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="rt-col">
+              <div className="rt-col-title">主力净流出 Top5（亿）</div>
+              {(rtData.sectors.flow_out || []).map((s) => (
+                <div key={s.name} className="rt-row">
+                  <span className="rt-name">{s.name}</span>
+                  <span className="neg">
+                    {Number.isFinite(Number(s.net_inflow)) ? `${(Number(s.net_inflow) / 1e8).toFixed(1)} 亿` : "—"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {rtData && rtData.news && rtData.news.news && rtData.news.news.length ? (
+          <div className="rt-news">
+            <div className="rt-col-title">最新快讯（新浪 7x24）</div>
+            {rtData.news.news.slice(0, 6).map((n, i) => (
+              <div key={i} className="rt-news-item">
+                <span className="rt-news-time">{n.time || ""}</span>
+                <span className="rt-news-text">{n.text}</span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <p className="rt-foot">数据仅供研究参考，实时性以各数据源为准；市场有风险，决策需谨慎。</p>
       </div>
     </div>
   );

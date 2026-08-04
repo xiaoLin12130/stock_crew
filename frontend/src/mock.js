@@ -305,6 +305,89 @@ export function buildMockJobResult(payload) {
   };
 }
 
+// 实时数据 mock（结构与 GET /api/data/realtime 一致）
+export function buildMockRealtime() {
+  const now = new Date();
+  const pad = (x) => String(x).padStart(2, "0");
+  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  return {
+    status: {
+      date: isoDate(now),
+      time: stamp,
+      is_trading_day: now.getDay() >= 1 && now.getDay() <= 5,
+      phase: "交易中(上午)",
+    },
+    indices: {
+      indices: [
+        { name: "上证指数", price: 3806.79, pct_change: -0.0008, open: 3816.37, high: 3818.27, low: 3799.52, source: "东财实时" },
+        { name: "深证成指", price: 13703.19, pct_change: 0.019, open: 13680.5, high: 13740.2, low: 13620.1, source: "东财实时" },
+        { name: "创业板指", price: 3413.89, pct_change: 0.0337, open: 3390.0, high: 3425.3, low: 3380.4, source: "东财实时" },
+        { name: "科创50", price: 1575.22, pct_change: 0.0144, open: 1568.0, high: 1580.1, low: 1560.9, source: "东财实时" },
+      ],
+      source: "东财实时",
+      degraded: false,
+      degraded_reason: [],
+    },
+    zt: {
+      limit_up_count: 67,
+      limit_down_count: 0,
+      zhaban_count: 11,
+      touched_count: 78,
+      zhaban_rate: 0.141,
+      seal_rate: 0.859,
+      yesterday_zt_count: 75,
+      tier: { 首板: 42, "2板及以上": 25 },
+      source: "同花顺实时",
+      degraded: false,
+      degraded_reason: [],
+      units: {},
+    },
+    sectors: {
+      top: [
+        { name: "电子", pct_change: 0.0309, net_inflow: 14177361920 },
+        { name: "通信", pct_change: 0.0338, net_inflow: 12492857600 },
+        { name: "通信设备", pct_change: 0.0361, net_inflow: 12465150208 },
+        { name: "元件", pct_change: 0.0465, net_inflow: 8381961472 },
+        { name: "电池", pct_change: 0.025, net_inflow: 5000000000 },
+      ],
+      bottom: [
+        { name: "贵金属", pct_change: -0.021, net_inflow: -3000000000 },
+        { name: "煤炭", pct_change: -0.018, net_inflow: -2500000000 },
+        { name: "石油", pct_change: -0.015, net_inflow: -2200000000 },
+        { name: "钢铁", pct_change: -0.012, net_inflow: -1800000000 },
+        { name: "银行", pct_change: -0.008, net_inflow: -1500000000 },
+      ],
+      flow_in: [
+        { name: "电子", pct_change: 0.0309, net_inflow: 14177361920 },
+        { name: "通信", pct_change: 0.0338, net_inflow: 12492857600 },
+        { name: "通信设备", pct_change: 0.0361, net_inflow: 12465150208 },
+      ],
+      flow_out: [
+        { name: "贵金属", pct_change: -0.021, net_inflow: -3000000000 },
+        { name: "煤炭", pct_change: -0.018, net_inflow: -2500000000 },
+      ],
+      source: "东财实时",
+      degraded: false,
+      degraded_reason: [],
+      units: {},
+    },
+    news: {
+      news: [
+        { time: stamp, text: "【快讯】三井物产将回购至多 2000 亿日元的股份。", source: "新浪7x24" },
+        { time: stamp, text: "【快讯】我国牵头制定的工业通信国际标准发布。", source: "新浪7x24" },
+        { time: stamp, text: "【快讯】沪深两市成交额突破 5000 亿元。", source: "新浪7x24" },
+      ],
+      source: "新浪7x24",
+      degraded: false,
+      degraded_reason: [],
+    },
+    auction: { window: false, note: "非竞价窗口（09:15-09:25），竞价数据不可用" },
+    sources: ["东财实时", "同花顺实时", "新浪7x24"],
+    degraded: [],
+    updated_at: stamp,
+  };
+}
+
 // 历史列表种子（按日期分组、同日多份、倒序）
 export function seedMockReviews(today = new Date()) {
   const map = new Map();
@@ -353,8 +436,9 @@ export function mockReviewList(map) {
 }
 
 // ---------- 聊天 mock（对齐 §五 聊天端点契约） ----------
-export function buildChatMeta({ target_type, target, target_name, analysts, title }) {
-  const d = new Date();
+export function buildChatMeta({ target_type, target, target_name, analysts, title, date }) {
+  // 允许注入日期（seed/断言用固定日期），默认当前时间
+  const d = date ? new Date(`${date}T12:00:00`) : new Date();
   const ts = localIso(d);
   return {
     target_type: target_type === "sector" ? "sector" : "stock",
@@ -382,6 +466,7 @@ export function seedMockChatSessions(today = new Date()) {
       target_name: "半导体",
       analysts: s1Analysts,
       title: "半导体板块午后走势怎么看",
+      date,
     }),
     messages: [
       {
@@ -412,8 +497,9 @@ export function seedMockChatSessions(today = new Date()) {
       target_type: "stock",
       target: "600519",
       target_name: "贵州茅台",
-      analysts: [{ skill_name: "趋势派·老周" }],
+      analysts: [{ skill_name: "阿狼" }],
       title: "贵州茅台中线怎么看",
+      date,
     }),
     messages: [
       {

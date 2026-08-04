@@ -108,6 +108,16 @@ export function getJob(jobId) {
   return requestJson(`/api/jobs/${encodeURIComponent(jobId)}`);
 }
 
+// GET /api/data/realtime — 盘中实时数据快照（指数/涨跌停/板块/快讯）
+export async function getRealtimeData() {
+  try {
+    return await requestJson("/api/data/realtime");
+  } catch (err) {
+    if (canFallback()) return buildMockRealtime();
+    throw err;
+  }
+}
+
 // GET /api/reviews（历史分组列表）
 export async function listReviews() {
   try {

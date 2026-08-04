@@ -588,6 +588,18 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/data/realtime")
+def realtime_snapshot() -> dict[str, Any]:
+    """盘中实时数据快照（指数/涨跌停统计/板块资金流/快讯）。
+    同步 def → FastAPI 线程池执行，不阻塞事件循环；单块失败独立降级标注。"""
+    from stock_review_crew.tools.realtime import fetch_realtime_snapshot
+
+    try:
+        return fetch_realtime_snapshot()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"实时数据获取失败：{exc}") from exc
+
+
 @app.post("/api/reviews")
 def create_review(payload: Any = Body(...)) -> dict[str, str]:
     if not isinstance(payload, dict):
