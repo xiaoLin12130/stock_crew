@@ -154,6 +154,7 @@ def _mock_all_fail(monkeypatch):
     # 通达信本地兜底也禁用：与 .env TDX_PATH / F:\tdx 实际存在无关
     import stock_review_crew.config as cfg
     monkeypatch.setattr(cfg, "TDX_PATH", None)
+    monkeypatch.setattr("stock_review_crew.tools.realtime.fetch_news", _raise)
     for name in ("_tx_index_daily", "_em_zt_pool", "_em_zt_pool_zbgc", "_em_zt_pool_dtgc",
                  "_ts_daily", "_ts_stock_basic", "_ths_sector_summary", "_em_index_minute",
                  "_em_lhb", "_news_cctv", "_news_economic_baidu", "_news_caixin",
@@ -161,7 +162,8 @@ def _mock_all_fail(monkeypatch):
                  "_legu_activity", "_http_get_json", "_em_zt_pool_previous", "_em_spot",
                  "_em_pre_min", "_em_stock_daily", "_em_sector_names", "_ths_sector_names",
                  "_em_sector_hist", "_ths_sector_hist", "_zt_pool_from_ths",
-                 "_sentiment_from_ths", "_sectors_from_browser_today"):
+                 "_sentiment_from_ths", "_sectors_from_browser_today", "_records_from_em_kline",
+                 "_records_from_tx_kline", "_minute_bars_from_tx", "_sectors_from_tx_today"):
         monkeypatch.setattr(sd, name, _raise, raising=False)
     monkeypatch.setattr(sd, "get_cache_dir", lambda: Path(__file__).parent / "no_such_cache")
 

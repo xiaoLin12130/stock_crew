@@ -616,6 +616,22 @@ def realtime_quote(code: str = "") -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"个股行情获取失败：{exc}") from exc
 
 
+@app.get("/api/data/search")
+def stock_search(q: str = "") -> list[dict[str, Any]]:
+    """股票名称/代码搜索（东财 suggest → 腾讯 smartbox），供个股查询用名称输入。"""
+    q = str(q or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="请输入股票名称或代码")
+    from stock_review_crew.tools.realtime import RealtimeError, search_stocks
+
+    try:
+        return search_stocks(q)
+    except RealtimeError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"股票搜索失败：{exc}") from exc
+
+
 @app.post("/api/reviews")
 def create_review(payload: Any = Body(...)) -> dict[str, str]:
     if not isinstance(payload, dict):

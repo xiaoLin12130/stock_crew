@@ -124,3 +124,64 @@ def test_quote_endpoint(monkeypatch):
 
     monkeypatch.setattr(realtime, "fetch_stock_quote", _boom)
     assert client.get("/api/data/quote", params={"code": "999999"}).status_code == 404
+
+
+def test_sector_flow_tx_fallback(monkeypatch):
+    """东财失败 → 腾讯行业排行兜底（来源标注）。"""
+    fake_rank = {
+        "data": {
+            "rank_list": [
+                {"name": "食品饮料", "zdf": "-1.45", "zljlr": "-211.70",
+                 "lzg": {"name": "莲花控股", "zdf": "10.05"}},
+                {"name": "电子", "zdf": "3.09", "zljlr": "1417736.0",
+                 "lzg": {"name": "沪电股份", "zdf": "6.5"}},
+            ]
+        }
+    }
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return fake_rank
+
+    monkeypatch.setattr(realtime, "_http_json", lambda *a, **k: (_ for _ in ()).throw(RealtimeError("东财 502")))
+    monkeypatch.setattr(realtime.requests, "get", lambda *a, **k: _Resp())
+    b = realtime.fetch_sector_flow()
+    assert b["source"] == "腾讯行业"
+    assert b["top"][0]["name"] == "电子"
+    assert b["top"][0]["pct_change"] == pytest.approx(0.0309)
+    assert b["bottom"][0]["name"] == "食品饮料"
+    assert b["flow_in"][0]["net_inflow"] == pytest.approx(1417736.0 * 10000)
+
+
+def test_search_stocks(monkeypatch):
+    fake = {
+        "QuotationCodeTable": {
+            "Data": [
+                {"Code": "600519", "Name": "贵州茅台", "MktNum": "1", "SecurityTypeName": "沪A"},
+                {"Code": "000858", "Name": "五粮液", "MktNum": "0", "SecurityTypeName": "深A"},
+            ],
+            "TotalCount": 2,
+        }
+    }
+    monkeypatch.setattr(realtime, "_http_json", lambda *a, **k: fake)
+    out = realtime.search_stocks("茅台")
+    assert out[0] == {"code": "600519", "name": "贵州茅台", "market": "sh", "type": "沪A"}
+    assert out[1]["market"] == "sz"
+    # 6 位代码直接返回
+    out2 = realtime.search_stocks("600519")
+    assert out2[0]["code"] == "600519"
+
+
+def test_search_endpoint(monkeypatch):
+    monkeypatch.setattr(
+        realtime, "search_stocks",
+        lambda q: [{"code": "600519", "name": "贵州茅台", "market": "sh", "type": "GP"}],
+    )
+    r = client.get("/api/data/search", params={"q": "茅台"})
+    assert r.status_code == 200, r.text
+    assert r.json()[0]["code"] == "600519"
+    assert client.get("/api/data/search", params={"q": ""}).status_code == 400
+    assert client.get("/api/data/search").status_code == 400

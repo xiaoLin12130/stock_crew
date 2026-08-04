@@ -411,6 +411,15 @@ export function mockStockQuote(code) {
   };
 }
 
+// 股票搜索 mock（结构同 GET /api/data/search）
+export function mockSearchStocks(q) {
+  const text = String(q || "").trim();
+  return [
+    { code: "600519", name: "贵州茅台", market: "sh", type: "GP" },
+    { code: "000858", name: "五粮液", market: "sz", type: "GP" },
+  ].filter((s) => !text || s.name.includes(text) || s.code.includes(text)).slice(0, 5);
+}
+
 // 历史列表种子（按日期分组、同日多份、倒序）
 export function seedMockReviews(today = new Date()) {
   const map = new Map();

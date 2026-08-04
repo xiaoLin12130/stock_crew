@@ -554,6 +554,83 @@ def _records_from_tx(df: pd.DataFrame) -> list[dict]:
     return [r for r in rows if r["close"] is not None]
 
 
+def _tx_symbol(symbol: str) -> str:
+    s = str(symbol).lower()
+    if s.startswith(("sh", "sz", "bj")):
+        return s
+    if s.startswith(("6", "9")):
+        return f"sh{s}"
+    if s.startswith(("4", "8", "92")):
+        return f"bj{s}"
+    return f"sz{s}"
+
+
+def _em_secid(symbol: str) -> str:
+    s = str(symbol).lower()
+    num = s[2:] if s.startswith(("sh", "sz", "bj")) else s
+    market = "1" if s.startswith("sh") or num.startswith(("6", "9")) else "0"
+    return f"{market}.{num}"
+
+
+def _records_from_em_kline(symbol: str) -> list[dict]:
+    """备用：东财 push2his HTTP 日K（盘中即含当日 bar，实测可用）。"""
+    import requests as _rq
+
+    resp = _rq.get(
+        f"http://push2his.eastmoney.com/api/qt/stock/kline/get",
+        params={"secid": _em_secid(symbol), "klt": 101, "fqt": 1,
+                "fields1": "f1,f2,f3,f4,f5,f6", "fields2": "f51,f52,f53,f54,f55,f56,f57",
+                "end": "20500101", "lmt": 320},
+        headers={"User-Agent": _UA},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    klines = ((resp.json().get("data") or {}).get("klines")) or []
+    rows = []
+    for line in klines:
+        parts = str(line).split(",")
+        if len(parts) < 7:
+            continue
+        rows.append({
+            "date": parts[0],
+            "open": _to_finite(parts[1]), "close": _to_finite(parts[2]),
+            "high": _to_finite(parts[3]), "low": _to_finite(parts[4]),
+            "volume": _to_finite(parts[5]), "amount": _to_finite(parts[6]),
+        })
+    if not rows:
+        raise DataSourceError("东财日K备用无数据")
+    return [r for r in rows if r["close"] is not None]
+
+
+def _records_from_tx_kline(symbol: str) -> list[dict]:
+    """备用：腾讯日K（web.ifzq.gtimg.cn，实测可用）。"""
+    import requests as _rq
+
+    sym = _tx_symbol(symbol)
+    resp = _rq.get(
+        "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
+        params={"param": f"{sym},day,,,320,qfq"},
+        headers={"User-Agent": _UA},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = (resp.json().get("data") or {}).get(sym) or {}
+    raw = data.get("day") or data.get("qfqday") or []
+    rows = []
+    for item in raw:
+        if not isinstance(item, list) or len(item) < 6:
+            continue
+        rows.append({
+            "date": str(item[0]),
+            "open": _to_finite(item[1]), "close": _to_finite(item[2]),
+            "high": _to_finite(item[3]), "low": _to_finite(item[4]),
+            "volume": _to_finite(item[5]), "amount": None,
+        })
+    if not rows:
+        raise DataSourceError("腾讯日K备用无数据")
+    return [r for r in rows if r["close"] is not None]
+
+
 def _compute_index_metrics(records: list[dict], date: str, days: int) -> Optional[dict]:
     """从日线记录计算截至 date（≤date 最近一条）的指数指标；无记录返回 None。"""
     idx = None
@@ -638,9 +715,42 @@ def fetch_index_trend(date: str, days: int = 60, tdx_path: Optional[str] = None)
         _cache_save(date, "index_trend", out)
         return out
 
-    # 备用源：通达信本地
+    # 备用源 1：东财 push2his HTTP 日K（盘中即含当日）→ 腾讯日K
+    online_backup_ok = True
+    for name, symbol in INDEX_CODES.items():
+        if indices.get(name) is not None:
+            continue
+        records = None
+        try:
+            records = _call_with_timeout(_records_from_em_kline, symbol)
+            src = "东财日K备用"
+        except Exception as exc:
+            errors.append(f"东财日K备用·{name}: {exc}")
+        if records is None:
+            try:
+                records = _call_with_timeout(_records_from_tx_kline, symbol)
+                src = "腾讯日K备用"
+            except Exception as exc:
+                errors.append(f"腾讯日K备用·{name}: {exc}")
+        if records:
+            metrics = _compute_index_metrics(records, date, days)
+            if metrics is not None:
+                metrics["_fallback_source"] = src
+                indices[name] = metrics
+                if asof is None or metrics["daily"][-1]["date"] > asof:
+                    asof = metrics["daily"][-1]["date"]
+    if all(v is not None for v in indices.values()):
+        note = None if asof == date else (f"非交易日，取最近交易日 {asof} 数据" if asof else None)
+        return {"indices": indices, "asof_date": asof, "requested_date": date,
+                "source": "东财/腾讯日K备用", "degraded": True,
+                "degraded_reason": ["通达信akshare失败，降级在线日K备用源"],
+                "note": note}
+
+    # 备用源 2：通达信本地
     backup_ok = True
     for name, symbol in INDEX_CODES.items():
+        if indices.get(name) is not None:
+            continue
         try:
             day = tdx_local.read_day(symbol, tdx_path=tdx_path)
             records = day["records"]
@@ -656,7 +766,7 @@ def fetch_index_trend(date: str, days: int = 60, tdx_path: Optional[str] = None)
         except Exception as exc:
             backup_ok = False
             errors.append(f"通达信本地·{name}: {exc}")
-    if backup_ok:
+    if backup_ok and all(v is not None for v in indices.values()):
         note = None if asof == date else (f"非交易日，取最近交易日 {asof} 数据" if asof else None)
         return {"indices": indices, "asof_date": asof, "requested_date": date,
                 "source": "通达信本地", "degraded": True,
@@ -1050,6 +1160,34 @@ def _sectors_from_browser_today() -> dict:
     }
 
 
+def _sectors_from_tx_today() -> dict:
+    """备用：腾讯行业排行（proxy.finance.qq.com，实测可用）。"""
+    from .realtime import _sector_flow_from_tx
+
+    b = _call_with_timeout(_sector_flow_from_tx)
+
+    def row(x: dict) -> dict:
+        return {
+            "板块": x.get("name"),
+            "涨跌幅": (x.get("pct_change") or 0) * 100,
+            "净流入": x.get("net_inflow"),
+            "成交额": None,
+            "领涨股": x.get("leading_stock"),
+            "领涨股-涨跌幅": (x.get("leading_pct_change") or 0) * 100,
+        }
+
+    return {
+        "top5": [_sector_row(row(x)) for x in b["top"]],
+        "bottom5": [_sector_row(row(x)) for x in b["bottom"]],
+        "bottom5_flow": [_sector_row(row(x)) for x in b["flow_out"]],
+        "units": _SECTOR_UNITS,
+        "source": "腾讯行业",
+        "degraded": True,
+        "degraded_reason": ["同花顺不可用，降级腾讯行业排行"],
+        "note": "腾讯行业排行（含领涨股，资金已换算为元）",
+    }
+
+
 def _sectors_from_em_today() -> dict:
     df = _call_with_timeout(_em_sector_names)
     if df is None or df.empty:
@@ -1135,6 +1273,12 @@ def fetch_sectors(date: str) -> dict:
             return block
         except Exception as exc:
             errors.append(f"同花顺: {exc}")
+        try:
+            block = _sectors_from_tx_today()
+            _cache_save(date, "sectors", block)
+            return block
+        except Exception as exc:
+            errors.append(f"腾讯行业: {exc}")
         try:
             block = _sectors_from_browser_today()
             _cache_save(date, "sectors", block)
@@ -1459,6 +1603,44 @@ def _minute_bars_from_tdx(symbol: str, date: str, period: int,
     return rows
 
 
+def _minute_bars_from_tx(symbol: str, date: str, period: int,
+                         end_time: Optional[str]) -> list[dict]:
+    """备用：腾讯分时（web.ifzq.gtimg.cn，实测可用；仅支持 1 分钟且仅当日）。"""
+    if period != 1:
+        raise DataSourceError("腾讯分时仅支持 1 分钟")
+    import requests as _rq
+
+    sym = _tx_symbol(symbol)
+    resp = _rq.get(
+        "https://web.ifzq.gtimg.cn/appstock/app/minute/query",
+        params={"code": sym},
+        headers={"User-Agent": _UA},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = ((resp.json().get("data") or {}).get(sym) or {}).get("data") or {}
+    bar_date = str(data.get("date") or "")
+    if bar_date and bar_date != str(date).replace("-", ""):
+        raise DataSourceError(f"腾讯分时仅当日可用（返回 {bar_date}，请求 {date}）")
+    raw = data.get("data") or []
+    end = str(end_time or "15:00:00").replace(":", "")[:4]
+    rows = []
+    for line in raw:
+        parts = str(line).split()
+        if len(parts) < 4:
+            continue
+        t = parts[0][:4]
+        if t > end:
+            continue
+        rows.append({
+            "time": t, "close": _to_finite(parts[1]),
+            "volume": _to_finite(parts[2]), "amount": _to_finite(parts[3]),
+        })
+    if not rows:
+        raise DataSourceError("腾讯分时备用无数据")
+    return rows
+
+
 def fetch_minute_data(symbol: str = "sh000001", date: Optional[str] = None,
                       period: int = 1, end_time: Optional[str] = None,
                       tdx_path: Optional[str] = None) -> dict:
@@ -1483,6 +1665,17 @@ def fetch_minute_data(symbol: str = "sh000001", date: Optional[str] = None,
         return block
     except Exception as exc:
         errors.append(f"东财: {exc}")
+    try:
+        bars = _minute_bars_from_tx(symbol, date, period, end_time)
+        block = {"symbol": symbol, "date": date, "period": period, "end_time": end_time,
+                 "bars": bars, "bar_count": len(bars),
+                 "volume_unit": "手", "amount_unit": "元",
+                 "source": "腾讯分时", "degraded": True,
+                 "degraded_reason": ["东财不可用，降级腾讯分时"], "note": None}
+        _cache_save(date, f"minute_{symbol}_{period}", block)
+        return block
+    except Exception as exc:
+        errors.append(f"腾讯分时: {exc}")
     try:
         bars = _minute_bars_from_tdx(symbol, date, period, end_time, tdx_path)
         block = {"symbol": symbol, "date": date, "period": period, "end_time": end_time,
@@ -1976,10 +2169,11 @@ def fetch_market_macro(date: str) -> dict:
 # ═══════════════════════════════════════════════════════════════
 
 def fetch_news_headlines(date: str) -> dict:
-    """财经资讯：财新头条（仅当天）、央视要闻、经济数据日历。"""
+    """财经资讯：财新头条（仅当天）、央视要闻、经济数据日历、新浪7x24（备用）。"""
     fmt = _d(date)
     today = _now().strftime("%Y-%m-%d")
-    result: dict[str, Any] = {"caixin": [], "cctv": [], "economic_calendar": [], "note": ""}
+    result: dict[str, Any] = {"caixin": [], "cctv": [], "economic_calendar": [],
+                              "realtime": [], "note": ""}
     errors: list[str] = []
     if date == today:
         try:
@@ -2012,6 +2206,16 @@ def fetch_news_headlines(date: str) -> dict:
                 for _, r in high.head(10).iterrows()]
     except Exception as exc:
         errors.append(f"经济日历: {exc}")
+    # 备用：新浪7x24 实时快讯（仅在财新/央视均无数据时降级，避免无谓网络请求）
+    if not result["caixin"] and not result["cctv"]:
+        try:
+            from .realtime import fetch_news
+
+            nb = _call_with_timeout(fetch_news)
+            result["realtime"] = nb.get("news") or []
+            result["note"] = (result["note"] + "；" if result["note"] else "") + "财新/央视不可用，降级新浪7x24"
+        except Exception as exc:
+            errors.append(f"新浪7x24: {exc}")
     result["source"] = "财新/央视/经济日历"
     result["degraded"] = bool(errors)
     result["degraded_reason"] = errors or []

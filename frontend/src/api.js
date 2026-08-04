@@ -129,6 +129,17 @@ export async function getStockQuote(code) {
   }
 }
 
+// GET /api/data/search?q=茅台 — 股票名称/代码搜索
+export async function searchStocks(q) {
+  try {
+    const data = await requestJson(`/api/data/search?q=${encodeURIComponent(String(q).trim())}`);
+    return Array.isArray(data) ? data : [];
+  } catch (err) {
+    if (canFallback()) return mockSearchStocks(q);
+    throw err;
+  }
+}
+
 // GET /api/reviews（历史分组列表）
 export async function listReviews() {
   try {

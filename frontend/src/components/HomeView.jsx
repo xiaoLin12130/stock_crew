@@ -34,6 +34,7 @@ export default function HomeView({
   const [quote, setQuote] = useState(null);
   const [quoteLoading, setQuoteLoading] = useState(false);
   const [quoteError, setQuoteError] = useState("");
+  const [quoteMatches, setQuoteMatches] = useState([]);
 
   const loadRealtime = useCallback(async () => {
     setRtLoading(true);
@@ -88,7 +89,7 @@ export default function HomeView({
   const loadQuote = useCallback(async (code) => {
     const c = String(code || "").trim();
     if (!/^\d{6}$/.test(c)) {
-      setQuoteError("请输入 6 位股票代码，如 600519");
+      setQuoteError("请输入 6 位股票代码，或先搜索股票名称选择代码");
       return;
     }
     setQuoteLoading(true);
@@ -103,6 +104,41 @@ export default function HomeView({
       setQuoteLoading(false);
     }
   }, []);
+
+  // 支持名称查询：6 位代码直接查，否则先搜索再展示候选
+  const handleQuoteQuery = useCallback(
+    async (text) => {
+      const t = String(text || "").trim();
+      if (!t) {
+        setQuoteError("请输入股票名称或 6 位代码");
+        return;
+      }
+      setQuoteMatches([]);
+      if (/^\d{6}$/.test(t)) {
+        loadQuote(t);
+        return;
+      }
+      setQuoteLoading(true);
+      setQuoteError("");
+      try {
+        const list = await api.searchStocks(t);
+        if (!list || list.length === 0) {
+          setQuoteError(`未找到与「${t}」匹配的股票`);
+          return;
+        }
+        if (list.length === 1) {
+          loadQuote(list[0].code);
+          return;
+        }
+        setQuoteMatches(list.slice(0, 5));
+      } catch (err) {
+        setQuoteError((err && err.message) || "搜索失败，请重试");
+      } finally {
+        setQuoteLoading(false);
+      }
+    },
+    [loadQuote]
+  );
 
   const hints = useMemo(() => windowHints(mode, date), [mode, date]);
 
@@ -520,18 +556,36 @@ export default function HomeView({
             <input
               className="search-input"
               style={{ maxWidth: 200 }}
-              placeholder="输入 6 位股票代码，如 600519"
+              placeholder="输入名称或代码，如：茅台 / 600519"
               value={quoteCode}
               onChange={(e) => setQuoteCode(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") loadQuote(quoteCode);
+                if (e.key === "Enter") handleQuoteQuery(quoteCode);
               }}
             />
-            <button className="btn btn-outline btn-sm" onClick={() => loadQuote(quoteCode)} disabled={quoteLoading}>
+            <button className="btn btn-outline btn-sm" onClick={() => handleQuoteQuery(quoteCode)} disabled={quoteLoading}>
               {quoteLoading ? "查询中…" : "查询"}
             </button>
           </div>
           {quoteError ? <div className="upload-error">{quoteError}</div> : null}
+          {quoteMatches.length ? (
+            <div className="rt-quote-matches">
+              <span>找到多个匹配，请选择：</span>
+              {quoteMatches.map((m) => (
+                <button
+                  key={m.code}
+                  type="button"
+                  className="tag-chip light"
+                  onClick={() => {
+                    setQuoteMatches([]);
+                    loadQuote(m.code);
+                  }}
+                >
+                  {m.name || m.code}（{m.code}）
+                </button>
+              ))}
+            </div>
+          ) : null}
           {quote ? (
             <div className="rt-quote-box">
               <div className="rt-quote-name">

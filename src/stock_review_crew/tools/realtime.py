@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
@@ -129,7 +130,7 @@ def fetch_indices_tx() -> dict[str, Any]:
 
 
 def fetch_sector_flow() -> dict[str, Any]:
-    """行业板块涨幅 + 主力净流入（东财 clist fid=f62，实时）。"""
+    """行业板块涨幅 + 主力净流入：东财 clist → 腾讯行业排行 → 浏览器同花顺。"""
     em_err: Optional[Exception] = None
     try:
         data = _http_json(
@@ -167,6 +168,10 @@ def fetch_sector_flow() -> dict[str, Any]:
             }
     except Exception as exc:  # noqa: BLE001
         em_err = exc
+    try:
+        return _sector_flow_from_tx()
+    except Exception as exc:  # noqa: BLE001
+        tx_err = exc
     # 备用：浏览器解析同花顺板块页（页面 JS 签名自动执行）
     try:
         from .browser_crawler import fetch_ths_sector_rows
@@ -190,7 +195,49 @@ def fetch_sector_flow() -> dict[str, Any]:
             "units": {"pct_change": "小数(0.05=5%)", "net_inflow": "元"},
         }
     except Exception as exc:  # noqa: BLE001
-        raise RealtimeError(f"板块数据失败：东财({em_err})；浏览器({exc})") from exc
+        raise RealtimeError(f"板块数据失败：东财({em_err})；腾讯({tx_err})；浏览器({exc})") from exc
+
+
+def _sector_flow_from_tx() -> dict[str, Any]:
+    """备用：腾讯行业排行（proxy.finance.qq.com，实测可用；资金单位为万元）。"""
+    resp = requests.get(
+        "https://proxy.finance.qq.com/cgi/cgi-bin/rank/pt/getRank",
+        params={"board_type": "hy", "sort_type": "price", "direct": "down",
+                "offset": 0, "count": 30},
+        headers={"User-Agent": _UA, "Referer": "https://gu.qq.com/"},
+        timeout=_TIMEOUT,
+    )
+    resp.raise_for_status()
+    rank = ((resp.json().get("data") or {}).get("rank_list")) or []
+    rows = []
+    for r in rank:
+        pct = _to_float(r.get("zdf"))
+        net = _to_float(r.get("zljlr"))
+        leader = r.get("lzg") or {}
+        leader_pct = _to_float(leader.get("zdf"))
+        rows.append(
+            {
+                "name": r.get("name"),
+                "pct_change": round(pct / 100.0, 6) if pct is not None else None,
+                "net_inflow": net * 10000 if net is not None else None,  # 腾讯为万元
+                "leading_stock": leader.get("name"),
+                "leading_pct_change": round(leader_pct / 100.0, 6) if leader_pct is not None else None,
+            }
+        )
+    if not rows:
+        raise RealtimeError("腾讯行业排行无数据")
+    with_pct = [r for r in rows if r.get("pct_change") is not None]
+    with_flow = [r for r in rows if r.get("net_inflow") is not None]
+    return {
+        "top": sorted(with_pct, key=lambda x: x["pct_change"], reverse=True)[:5],
+        "bottom": sorted(with_pct, key=lambda x: x["pct_change"])[:5],
+        "flow_in": sorted(with_flow, key=lambda x: x["net_inflow"], reverse=True)[:5],
+        "flow_out": sorted(with_flow, key=lambda x: x["net_inflow"])[:5],
+        "source": "腾讯行业",
+        "degraded": False,
+        "degraded_reason": [],
+        "units": {"pct_change": "小数(0.05=5%)", "net_inflow": "元"},
+    }
 
 
 def _secid(code: str) -> str:
@@ -228,6 +275,58 @@ def fetch_stock_quote(code: str) -> dict[str, Any]:
         "source": "东财实时",
         "units": {"pct_change": "小数(0.05=5%)", "turnover_rate": "小数"},
     }
+
+
+def search_stocks(query: str) -> list[dict[str, Any]]:
+    """股票名称/代码搜索：东财 suggest（主）→ 腾讯 smartbox（备）。"""
+    q = str(query or "").strip()
+    if not q:
+        raise RealtimeError("请输入股票名称或代码")
+    if re.fullmatch(r"\d{6}", q):
+        code = q
+        return [{"code": code, "name": None, "market": "sh" if code.startswith(("6", "9")) else "sz",
+                 "type": "GP"}]
+    try:
+        data = _http_json(
+            "http://searchapi.eastmoney.com/api/suggest/get",
+            {"input": q, "type": 14, "token": "D43BF722C8E33BDC906FB84D85E326E8", "count": 8},
+        )
+        items = ((data.get("QuotationCodeTable") or {}).get("Data")) or []
+        out = []
+        for it in items:
+            code = str(it.get("Code") or "").zfill(6)
+            if not code or code == "000000":
+                continue
+            mkt = str(it.get("MktNum") or "")
+            market = ("sh" if mkt == "1" or code.startswith(("6", "9"))
+                      else "bj" if code.startswith(("4", "8", "92")) else "sz")
+            out.append({"code": code, "name": it.get("Name"), "market": market,
+                        "type": it.get("SecurityTypeName")})
+        if out:
+            return out
+    except Exception:  # noqa: BLE001 - 走腾讯备用
+        pass
+    try:
+        resp = requests.get(
+            "https://smartbox.gtimg.cn/s3/",
+            params={"v": 2, "q": q, "t": "gp"},
+            headers={"User-Agent": _UA},
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        m = re.search(r'v_hint="([^"]*)"', resp.text)
+        out = []
+        if m:
+            for part in m.group(1).split("^"):
+                f = part.split("~")
+                if len(f) >= 3 and f[2]:
+                    code = str(f[1]).zfill(6)
+                    out.append({"code": code, "name": f[2], "market": f[0], "type": "GP"})
+        if out:
+            return out
+    except Exception:  # noqa: BLE001
+        pass
+    raise RealtimeError(f"未找到与「{q}」匹配的股票")
 
 
 def fetch_zt_stats(date: Optional[str] = None) -> dict[str, Any]:
