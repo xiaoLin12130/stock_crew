@@ -247,34 +247,86 @@ def _secid(code: str) -> str:
     return f"0.{code}"
 
 
+def _tx_symbol(code: str) -> str:
+    """转腾讯行情代码格式（sh600519 / sz000001 / bj830799）。"""
+    code = str(code or "").strip().zfill(6)
+    if code.startswith(("6", "9")):
+        return f"sh{code}"
+    if code.startswith(("4", "8", "92")):
+        return f"bj{code}"
+    return f"sz{code}"
+
+
 def fetch_stock_quote(code: str) -> dict[str, Any]:
     """个股实时行情（东财 push2 stock/get，fltt=2 已小数化；涨跌幅百分数 → /100）。"""
-    secid = _secid(code)
-    data = _http_json(
-        f"{_EM}/stock/get",
-        {"secid": secid, "fields": "f43,f44,f45,f46,f47,f48,f57,f58,f60,f169,f170",
-         "fltt": 2, "invt": 2},
-    )
-    d = data.get("data") or {}
-    if not d or d.get("f43") in (None, "-"):
-        raise RealtimeError(f"未查询到 {code} 的实时行情（代码可能错误或停牌）")
-    pct = _to_float(d.get("f170"))
-    turnover = _to_float(d.get("f169"))
-    return {
-        "code": str(d.get("f57") or code).zfill(6),
-        "name": d.get("f58"),
-        "price": _to_float(d.get("f43")),
-        "pct_change": round(pct / 100.0, 6) if pct is not None else None,
-        "open": _to_float(d.get("f46")),
-        "high": _to_float(d.get("f44")),
-        "low": _to_float(d.get("f45")),
-        "pre_close": _to_float(d.get("f60")),
-        "volume": _to_float(d.get("f47")),
-        "amount": _to_float(d.get("f48")),
-        "turnover_rate": round(turnover / 100.0, 6) if turnover is not None else None,
-        "source": "东财实时",
-        "units": {"pct_change": "小数(0.05=5%)", "turnover_rate": "小数"},
-    }
+    em_err: Optional[Exception] = None
+    try:
+        secid = _secid(code)
+        data = _http_json(
+            f"{_EM}/stock/get",
+            {"secid": secid, "fields": "f43,f44,f45,f46,f47,f48,f57,f58,f60,f169,f170",
+             "fltt": 2, "invt": 2},
+        )
+        d = data.get("data") or {}
+        if d and d.get("f43") not in (None, "-"):
+            pct = _to_float(d.get("f170"))
+            turnover = _to_float(d.get("f169"))
+            return {
+                "code": str(d.get("f57") or code).zfill(6),
+                "name": d.get("f58"),
+                "price": _to_float(d.get("f43")),
+                "pct_change": round(pct / 100.0, 6) if pct is not None else None,
+                "open": _to_float(d.get("f46")),
+                "high": _to_float(d.get("f44")),
+                "low": _to_float(d.get("f45")),
+                "pre_close": _to_float(d.get("f60")),
+                "volume": _to_float(d.get("f47")),
+                "amount": _to_float(d.get("f48")),
+                "turnover_rate": round(turnover / 100.0, 6) if turnover is not None else None,
+                "source": "东财实时",
+                "units": {"pct_change": "小数(0.05=5%)", "turnover_rate": "小数"},
+            }
+    except Exception as exc:  # noqa: BLE001
+        em_err = exc
+    # 备用：腾讯行情（qt.gtimg.cn，实测可用）
+    try:
+        import requests as _rq
+
+        resp = _rq.get(
+            f"https://qt.gtimg.cn/q={_tx_symbol(code)}",
+            headers={"User-Agent": _UA},
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        text = resp.text
+        if "=" not in text:
+            raise RealtimeError(f"腾讯行情返回异常：{code}")
+        parts = text.split("=", 1)[1].strip('"').split("~")
+        if len(parts) < 35:
+            raise RealtimeError(f"腾讯行情字段不足：{code}")
+        pct = _to_float(parts[32])
+        turnover = _to_float(parts[38]) if len(parts) > 38 else None
+        return {
+            "code": str(parts[2]).zfill(6),
+            "name": parts[1],
+            "price": _to_float(parts[3]),
+            "pct_change": round(pct / 100.0, 6) if pct is not None else None,
+            "open": _to_float(parts[5]),
+            "high": _to_float(parts[33]),
+            "low": _to_float(parts[34]),
+            "pre_close": _to_float(parts[4]),
+            "volume": _to_float(parts[6]),
+            "amount": None,
+            "turnover_rate": round(turnover / 100.0, 6) if turnover is not None else None,
+            "source": "腾讯实时",
+            "units": {"pct_change": "小数(0.05=5%)", "turnover_rate": "小数"},
+        }
+    except RealtimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise RealtimeError(
+            f"未查询到 {code} 的实时行情：东财({em_err})；腾讯({exc})"
+        ) from exc
 
 
 def search_stocks(query: str) -> list[dict[str, Any]]:

@@ -107,3 +107,16 @@
 - 现象：apply_patch 生成的 .bat（LF 换行）在 cmd 下解析错乱
   （echo 被拆行、中文行报「不是内部或外部命令」）。
 - 解决：批处理文件写完后统一转 CRLF（PowerShell/脚本处理），并实测 `cmd /c` 运行。
+
+### [2026-08-04] dist 不提交 git → 部署可能用陈旧前端
+- 现象：源码/提交均有「股票名称搜索」，但线上 bundle 缺失（grep 不到
+  api/data/search），用户功能「没做到」。
+- 原因：frontend/dist 被 .gitignore 排除，某次前端改动后没有重新 `npm run build`，
+  静态托管一直服务旧产物。
+- 解决：前端改动后必须重新 build，并用 node 校验 bundle 关键字符串
+  （如 `api/data/search`）再部署；PLAYBOOK 新增检查项。
+
+### [2026-08-04] 东财 push2 全系 502（代理节点问题）
+- 现象：clist/stock/get 等 push2 接口持续 502，个股行情与板块同时挂。
+- 解决：fetch_stock_quote 增加**腾讯 qt.gtimg.cn 备用**（实测可用）；
+  板块已有 腾讯行业/浏览器 兜底；指数已有 东财 push2his/腾讯日K 兜底。
