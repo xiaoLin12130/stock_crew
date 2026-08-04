@@ -56,6 +56,24 @@ a { color: var(--accent); }
 }
 
 .topbar-title { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; min-width: 0; }
+
+.menu-btn {
+  display: none;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 15px;
+  line-height: 1;
+  padding: 6px 9px;
+  color: var(--text);
+}
+
+.sidebar-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 110;
+}
 .topbar-badge { margin-left: 2px; }
 
 .content { padding: 24px 28px 48px; max-width: 1280px; width: 100%; margin: 0 auto; }
@@ -1067,9 +1085,29 @@ a { color: var(--accent); }
 @media (max-width: 760px) {
   .content { padding: 16px; }
   .topbar { padding: 0 16px; }
-  .sidebar { width: 60px; }
-  .sidebar .brand-text,
-  .sidebar .history { display: none; }
-  .sidebar .new-text { display: none; }
   .mode-grid { grid-template-columns: 1fr 1fr; }
+}
+
+/* 移动端：侧栏为抽屉（悬浮滑出，内容完整可见） */
+@media (max-width: 760px) {
+  .menu-btn { display: inline-flex; align-items: center; }
+  .sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 272px;
+    transform: translateX(-105%);
+    transition: transform 0.2s ease;
+    z-index: 120;
+    box-shadow: 0 0 24px rgba(0, 0, 0, 0.35);
+  }
+  .sidebar.mobile-open { transform: translateX(0); }
+  .sidebar .brand-text,
+  .sidebar .history,
+  .sidebar .new-text { display: block; }
+  .sidebar.collapsed .brand { justify-content: flex-start; padding: 18px 16px 12px; }
+  .sidebar.collapsed .collapse-text { display: inline; }
+  .result-head { flex-direction: column; }
+  .rt-grid { grid-template-columns: 1fr; }
 }

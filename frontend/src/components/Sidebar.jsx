@@ -4,6 +4,8 @@ import { stageLabel } from "../stages";
 
 export default function Sidebar({
   collapsed,
+  open,
+  onCloseMobile,
   onToggle,
   history,
   activeReviewKey,
@@ -24,6 +26,11 @@ export default function Sidebar({
 
   const groups = history.groups || [];
   const sessions = Array.isArray(chatSessions) ? chatSessions : [];
+
+  const pick = (fn) => (...args) => {
+    if (onCloseMobile) onCloseMobile();
+    if (fn) fn(...args);
+  };
 
   const askDeleteReview = (e, key) => {
     e.stopPropagation();
@@ -68,7 +75,7 @@ export default function Sidebar({
   const jobPct = job && Number.isFinite(Number(job.pct)) ? Math.round(Number(job.pct)) : 0;
 
   return (
-    <aside className={`sidebar${collapsed ? " collapsed" : ""}`}>
+    <aside className={`sidebar${collapsed ? " collapsed" : ""}${open ? " mobile-open" : ""}`}>
       <div className="brand">
         <div
           className="brand-mark"

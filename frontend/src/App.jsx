@@ -23,6 +23,7 @@ export default function App() {
       return false;
     }
   });
+  const [sidebarOpen, setSidebarOpen] = useState(false); // 移动端抽屉
   // 视图：home | progress | report | chat
   const [view, setView] = useState("home");
   // 运行中任务全局保留：切换视图不停止轮询、不丢失任务
@@ -86,6 +87,7 @@ export default function App() {
 
   // 「新建复盘」（侧栏唯一入口）：只切换视图，进行中的任务继续轮询
   const handleNew = useCallback(() => {
+    setSidebarOpen(false);
     setReport(null);
     setReportError(null);
     setChatIntent(null);
@@ -272,24 +274,36 @@ export default function App() {
   return (
     <ErrorBoundary onReset={handleNew}>
       <div className="app">
+        {sidebarOpen ? (
+          <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />
+        ) : null}
         <Sidebar
           collapsed={collapsed}
+          open={sidebarOpen}
+          onCloseMobile={() => setSidebarOpen(false)}
           onToggle={toggleCollapsed}
           history={history}
           activeReviewKey={activeReviewKey}
-          onSelectReview={handleOpenReview}
-          onNew={handleNew}
+          onSelectReview={(k) => { setSidebarOpen(false); handleOpenReview(k); }}
+          onNew={() => { setSidebarOpen(false); handleNew(); }}
           job={job}
-          onBackToJob={handleBackToJob}
+          onBackToJob={() => { setSidebarOpen(false); handleBackToJob(); }}
           chatSessions={chatSessions}
           activeChatId={activeChatSessionId}
-          onOpenChatSession={handleSelectChatSession}
+          onOpenChatSession={(id) => { setSidebarOpen(false); handleSelectChatSession(id); }}
           onDeleteReview={handleDeleteReview}
           onDeleteChatSession={handleDeleteChatSession}
         />
         <main className="main">
           <header className="topbar">
             <div className="topbar-title">
+              <button
+                className="menu-btn"
+                aria-label="打开菜单"
+                onClick={() => setSidebarOpen((o) => !o)}
+              >
+                ☰
+              </button>
               {title}
               {history.offline ? <span className="pill offline topbar-badge">离线 mock</span> : null}
             </div>
