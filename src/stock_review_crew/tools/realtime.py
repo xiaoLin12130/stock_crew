@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
 import requests
 
-_TIMEOUT = 15
+_TIMEOUT = 10
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -42,6 +43,7 @@ def _http_json(url: str, params: Optional[dict] = None) -> Any:
             cand = url.replace("http://push2.eastmoney.com", host)
             if cand not in attempts:
                 attempts.append(cand)
+    attempts = attempts[:2]  # 实时快照限时：最多 2 次尝试（10s×2=20s 上限）
     last_exc: Optional[Exception] = None
     for candidate in attempts:
         try:
@@ -311,36 +313,50 @@ def market_status(now: Optional[datetime] = None) -> dict[str, Any]:
 
 
 def fetch_realtime_snapshot() -> dict[str, Any]:
-    """完整实时快照：指数 → 涨跌停统计 → 板块 → 快讯；每块独立降级标注。"""
+    """完整实时快照：指数/涨跌停/板块/快讯**并行**抓取（总耗时≈最慢单块，≤20s）；
+    每块独立降级标注。"""
     status = market_status()
     snapshot: dict[str, Any] = {"status": status, "indices": None, "zt": None,
                                 "sectors": None, "news": None, "auction": None,
                                 "sources": [], "degraded": []}
-    try:
-        snapshot["indices"] = fetch_indices()
-        snapshot["sources"].append("东财实时")
-    except Exception as exc:
-        snapshot["degraded"].append(f"指数: {exc}")
+
+    def _indices() -> None:
         try:
-            snapshot["indices"] = fetch_indices_tx()
-            snapshot["sources"].append("腾讯实时")
-        except Exception as exc2:
-            snapshot["degraded"].append(f"指数备用: {exc2}")
-    try:
-        snapshot["zt"] = fetch_zt_stats(status["date"])
-        snapshot["sources"].append("同花顺实时")
-    except Exception as exc:
-        snapshot["degraded"].append(f"涨跌停统计: {exc}")
-    try:
-        snapshot["sectors"] = fetch_sector_flow()
-        snapshot["sources"].append("东财实时")
-    except Exception as exc:
-        snapshot["degraded"].append(f"板块资金流: {exc}")
-    try:
-        snapshot["news"] = fetch_news()
-        snapshot["sources"].append("新浪7x24")
-    except Exception as exc:
-        snapshot["degraded"].append(f"快讯: {exc}")
+            snapshot["indices"] = fetch_indices()
+            snapshot["sources"].append("东财实时")
+        except Exception as exc:  # noqa: BLE001
+            snapshot["degraded"].append(f"指数: {exc}")
+            try:
+                snapshot["indices"] = fetch_indices_tx()
+                snapshot["sources"].append("腾讯实时")
+            except Exception as exc2:  # noqa: BLE001
+                snapshot["degraded"].append(f"指数备用: {exc2}")
+
+    def _zt() -> None:
+        try:
+            snapshot["zt"] = fetch_zt_stats(status["date"])
+            snapshot["sources"].append("同花顺实时")
+        except Exception as exc:  # noqa: BLE001
+            snapshot["degraded"].append(f"涨跌停统计: {exc}")
+
+    def _sectors() -> None:
+        try:
+            snapshot["sectors"] = fetch_sector_flow()
+            snapshot["sources"].append("东财实时")
+        except Exception as exc:  # noqa: BLE001
+            snapshot["degraded"].append(f"板块资金流: {exc}")
+
+    def _news() -> None:
+        try:
+            snapshot["news"] = fetch_news()
+            snapshot["sources"].append("新浪7x24")
+        except Exception as exc:  # noqa: BLE001
+            snapshot["degraded"].append(f"快讯: {exc}")
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(fn) for fn in (_indices, _zt, _sectors, _news)]
+        for f in as_completed(futures):
+            f.result()  # 内部已全部兜底，不会上抛
     # 竞价窗口提示
     hm = datetime.now().hour * 60 + datetime.now().minute
     if status.get("is_trading_day") and 9 * 60 + 15 <= hm <= 9 * 60 + 25:

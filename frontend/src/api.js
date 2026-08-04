@@ -35,7 +35,8 @@ async function fetchWithTimeout(path, options = {}, timeoutMs = REQUEST_TIMEOUT_
     if (err && err.name === "AbortError") {
       throw new ApiError(`请求超时（${Math.round(timeoutMs / 1000)} 秒），请检查后端服务后重试`);
     }
-    throw err;
+    // 网络层错误（浏览器 TypeError "Failed to fetch" 等）统一转中文，禁止英文原文上屏
+    throw new ApiError("无法连接后端服务（网络错误），请确认服务已启动、代理已开启后重试");
   } finally {
     clearTimeout(timer);
   }
@@ -52,10 +53,10 @@ async function errorFrom(res, fallback) {
   return new ApiError(detail || `${fallback}（HTTP ${res.status}）`);
 }
 
-async function requestJson(path, options) {
+async function requestJson(path, options, timeoutMs = REQUEST_TIMEOUT_MS) {
   let res;
   try {
-    res = await fetchWithTimeout(path, options);
+    res = await fetchWithTimeout(path, options, timeoutMs);
   } catch (err) {
     if (err instanceof ApiError) throw err; // 超时等已带中文信息
     throw new ApiError("无法连接后端服务，请确认服务已启动");
@@ -111,7 +112,7 @@ export function getJob(jobId) {
 // GET /api/data/realtime — 盘中实时数据快照（指数/涨跌停/板块/快讯）
 export async function getRealtimeData() {
   try {
-    return await requestJson("/api/data/realtime");
+    return await requestJson("/api/data/realtime", {}, 45000);
   } catch (err) {
     if (canFallback()) return buildMockRealtime();
     throw err;
